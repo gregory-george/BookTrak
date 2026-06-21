@@ -167,11 +167,93 @@ else
 
     <div class="page-header" style="margin-top:2rem;">
         <h2 style="margin:0;">Editions (@_result.Editions.Count)</h2>
-        <label class="muted">
-            <input type="checkbox" checked="@_includeIgnoredEditions" @onchange="OnIncludeIgnoredEditionsChanged" />
-            Show ignored editions
-        </label>
+        <div class="toolbar">
+            <label class="muted">
+                <input type="checkbox" checked="@_includeIgnoredEditions" @onchange="OnIncludeIgnoredEditionsChanged" />
+                Show ignored editions
+            </label>
+            <button class="btn-primary" @onclick="ToggleAddEditionPanel">
+                @(_showAddEdition ? "Cancel" : "+ Add edition")
+            </button>
+        </div>
     </div>
+
+    @if (_showAddEdition)
+    {
+        <div class="status-editor">
+            <div class="toolbar">
+                <label>
+                    Format
+                    <select class="sort-select" value="@_newEditionFormat" @onchange="OnNewEditionFormatChanged">
+                        <option value="@EditionFormat.Physical">Physical</option>
+                        <option value="@EditionFormat.Ebook">Ebook</option>
+                        <option value="@EditionFormat.Audiobook">Audiobook</option>
+                    </select>
+                </label>
+            </div>
+
+            @if (_newEditionFormat == EditionFormat.Audiobook)
+            {
+                <div class="toolbar" style="margin-top:0.75rem;">
+                    <label>
+                        Audible ASIN
+                        <input class="search-box" placeholder="e.g. B002V1OF1S" value="@_newEditionAsin" @oninput="@(e => _newEditionAsin = e.Value?.ToString())" />
+                    </label>
+                    <button class="btn-primary" disabled="@(_addingEdition || string.IsNullOrWhiteSpace(_newEditionAsin))" @onclick="AddFromAsinAsync" style="align-self:end;">
+                        @(_addingEdition ? "Fetching…" : "Fetch from audnexus")
+                    </button>
+                </div>
+                <p class="muted" style="margin-top:0.5rem;">Or enter the audiobook details manually below.</p>
+            }
+
+            <div class="toolbar" style="margin-top:0.75rem;">
+                @if (_newEditionFormat != EditionFormat.Audiobook)
+                {
+                    <label>
+                        ISBN
+                        <input class="search-box" value="@_newEditionIsbn" @oninput="@(e => _newEditionIsbn = e.Value?.ToString())" />
+                    </label>
+                    <label>
+                        Pages
+                        <input class="search-box" type="number" value="@_newEditionPages" @oninput="@(e => _newEditionPages = int.TryParse(e.Value?.ToString(), out var p) ? p : null)" />
+                    </label>
+                }
+                <label>
+                    Language
+                    <input class="search-box" value="@_newEditionLanguage" @oninput="@(e => _newEditionLanguage = e.Value?.ToString())" />
+                </label>
+                <label>
+                    Publisher
+                    <input class="search-box" value="@_newEditionPublisher" @oninput="@(e => _newEditionPublisher = e.Value?.ToString())" />
+                </label>
+                <label>
+                    Published
+                    <input class="search-box" placeholder="e.g. 2021" value="@_newEditionPublishDate" @oninput="@(e => _newEditionPublishDate = e.Value?.ToString())" />
+                </label>
+
+                @if (_newEditionFormat == EditionFormat.Audiobook)
+                {
+                    <label>
+                        Narrator
+                        <input class="search-box" value="@_newEditionNarrator" @oninput="@(e => _newEditionNarrator = e.Value?.ToString())" />
+                    </label>
+                    <label>
+                        Duration (minutes)
+                        <input class="search-box" type="number" value="@_newEditionDurationMinutes" @oninput="@(e => _newEditionDurationMinutes = int.TryParse(e.Value?.ToString(), out var d) ? d : null)" />
+                    </label>
+                }
+
+                <button class="btn-primary" disabled="@_addingEdition" @onclick="AddManualEditionAsync" style="align-self:end;">
+                    @(_addingEdition ? "Adding…" : "Add edition manually")
+                </button>
+            </div>
+
+            @if (_addEditionMessage is not null)
+            {
+                <p class="muted">@_addEditionMessage</p>
+            }
+        </div>
+    }
 
     @if (_result.Editions.Count == 0)
     {
@@ -244,6 +326,19 @@ else
     private int? _readEditionId;
     private bool _savingStatus;
     private string? _statusMessage;
+
+    private bool _showAddEdition;
+    private EditionFormat _newEditionFormat;
+    private string? _newEditionAsin;
+    private string? _newEditionIsbn;
+    private int? _newEditionPages;
+    private string? _newEditionLanguage;
+    private string? _newEditionPublisher;
+    private string? _newEditionPublishDate;
+    private string? _newEditionNarrator;
+    private int? _newEditionDurationMinutes;
+    private bool _addingEdition;
+    private string? _addEditionMessage;
 
     private string? CoverWebPath => CoverPaths.ToWebPath(_result?.Book.PreferredEdition?.CoverPath);
 
@@ -347,6 +442,96 @@ else
     {
         _includeIgnoredEditions = e.Value is true;
         await LoadAsync();
+    }
+
+    private void ToggleAddEditionPanel()
+    {
+        _showAddEdition = !_showAddEdition;
+        _addEditionMessage = null;
+        if (_showAddEdition)
+        {
+            ResetNewEditionForm();
+        }
+    }
+
+    private void OnNewEditionFormatChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<EditionFormat>(e.Value?.ToString(), out var format))
+        {
+            _newEditionFormat = format;
+        }
+    }
+
+    private void ResetNewEditionForm()
+    {
+        _newEditionFormat = EditionFormat.Physical;
+        _newEditionAsin = null;
+        _newEditionIsbn = null;
+        _newEditionPages = null;
+        _newEditionLanguage = null;
+        _newEditionPublisher = null;
+        _newEditionPublishDate = null;
+        _newEditionNarrator = null;
+        _newEditionDurationMinutes = null;
+    }
+
+    private async Task AddFromAsinAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newEditionAsin))
+        {
+            return;
+        }
+
+        _addingEdition = true;
+        _addEditionMessage = null;
+        StateHasChanged();
+
+        var result = await LibraryWriteService.AddAudiobookEditionByAsinAsync(BookId, _newEditionAsin.Trim());
+        if (result.Success)
+        {
+            _showAddEdition = false;
+            await LoadAsync();
+        }
+        else
+        {
+            _addEditionMessage = result.Error;
+        }
+
+        _addingEdition = false;
+        StateHasChanged();
+    }
+
+    private async Task AddManualEditionAsync()
+    {
+        _addingEdition = true;
+        _addEditionMessage = null;
+        StateHasChanged();
+
+        var result = await LibraryWriteService.AddManualEditionAsync(
+            BookId,
+            _newEditionFormat,
+            _newEditionIsbn,
+            _newEditionPages,
+            _newEditionLanguage,
+            _newEditionPublisher,
+            _newEditionPublishDate,
+            _newEditionNarrator,
+            _newEditionDurationMinutes,
+            _newEditionPublisher,
+            _newEditionAsin);
+
+        if (result.Success)
+        {
+            _showAddEdition = false;
+            await LoadAsync();
+        }
+        else
+        {
+            _addEditionMessage = result.Error;
+        }
+
+        _addingEdition = false;
+        StateHasChanged();
     }
 
     private async Task RefreshAsync()

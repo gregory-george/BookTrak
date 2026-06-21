@@ -1,4 +1,5 @@
 using System.Windows.Forms;
+using BookTrak.Audnexus;
 using BookTrak.Components;
 using BookTrak.Data;
 using BookTrak.Hosting;
@@ -154,6 +155,7 @@ public class Program
                 options.UseSqlite($"Data Source={AppPaths.DatabaseFile}")
                     .AddInterceptors(new SqlitePragmaInterceptor()));
             builder.Services.AddOpenLibraryServices(contactInfo);
+            builder.Services.AddAudnexusServices(contactInfo);
             builder.Services.AddScoped<ILibraryQueryService, LibraryQueryService>();
             builder.Services.AddScoped<ILibraryWriteService, LibraryWriteService>();
             builder.Services.AddRazorComponents()

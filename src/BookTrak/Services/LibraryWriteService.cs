@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using BookTrak.Audnexus;
+using BookTrak.Audnexus.Models;
 using BookTrak.Data;
 using BookTrak.Data.Entities;
 using BookTrak.Hosting;
@@ -40,6 +42,8 @@ public sealed record RefreshResult(bool Success, bool WasOpenLibraryLinked, stri
 public sealed record RefreshAllItem(string Kind, string Name, bool Success, string? Error);
 
 public sealed record RefreshAllResult(int AuthorsRefreshed, int AuthorsFailed, int BooksRefreshed, int BooksFailed, IReadOnlyList<RefreshAllItem> Items);
+
+public sealed record AddEditionResult(bool Success, int? EditionId, string? Error);
 
 /// <summary>Re-sync staleness policy. No specific threshold is mandated by the spec — 30 days is
 /// a reasonable default for a personal, session-bounded app.</summary>
@@ -106,12 +110,35 @@ public interface ILibraryWriteService
     /// edition, repoints to the best remaining non-ignored edition (same scoring as add-time
     /// auto-pick), or null if none remain.</summary>
     Task SetEditionIgnoredAsync(int editionId, bool isIgnored, CancellationToken cancellationToken = default);
+
+    /// <summary>Enriches a new audiobook Edition from audnexus by ASIN and attaches it to the
+    /// given Book. If an edition with that ASIN is already attached, returns it unchanged
+    /// (Success=true) instead of duplicating. Falls back to a user-facing error — never throws —
+    /// so the UI can offer manual entry when audnexus is unavailable or has no match.</summary>
+    Task<AddEditionResult> AddAudiobookEditionByAsinAsync(int bookId, string asin, CancellationToken cancellationToken = default);
+
+    /// <summary>Manual edition entry fallback for any format (print/ebook/audiobook) — used when
+    /// Open Library/audnexus don't have the printing, or audnexus is unavailable.</summary>
+    Task<AddEditionResult> AddManualEditionAsync(
+        int bookId,
+        EditionFormat format,
+        string? isbn,
+        int? numberOfPages,
+        string? language,
+        string? publisher,
+        string? publishDate,
+        string? narrator,
+        int? durationMinutes,
+        string? audioPublisher,
+        string? asin,
+        CancellationToken cancellationToken = default);
 }
 
 internal sealed class LibraryWriteService(
     IDbContextFactory<BookTrakContext> contextFactory,
     IOpenLibraryClient openLibraryClient,
-    ICoverCacheService coverCache) : ILibraryWriteService
+    ICoverCacheService coverCache,
+    IAudiobookMetadataProvider audiobookMetadataProvider) : ILibraryWriteService
 {
     public async Task<IReadOnlyList<AuthorSearchResult>> SearchAuthorsAsync(string query, CancellationToken cancellationToken = default)
     {
@@ -573,6 +600,113 @@ internal sealed class LibraryWriteService(
         }
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<AddEditionResult> AddAudiobookEditionByAsinAsync(int bookId, string asin, CancellationToken cancellationToken = default)
+    {
+        asin = asin.Trim();
+
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var book = await context.Books.FirstOrDefaultAsync(b => b.Id == bookId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Book {bookId} not found.");
+
+        var existing = await context.Editions.FirstOrDefaultAsync(e => e.BookId == bookId && e.Asin == asin, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return new AddEditionResult(true, existing.Id, null);
+        }
+
+        NormalizedAudiobook? normalized;
+        try
+        {
+            normalized = await audiobookMetadataProvider.GetByAsinAsync(asin, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AudnexusUnavailableException ex)
+        {
+            return new AddEditionResult(false, null, ex.Message);
+        }
+
+        if (normalized is null)
+        {
+            return new AddEditionResult(false, null, $"audnexus has no audiobook for ASIN '{asin}'.");
+        }
+
+        var coverPath = !string.IsNullOrWhiteSpace(normalized.ImageUrl)
+            ? ToRelativePath(await coverCache.GetExternalCoverPathAsync(normalized.ImageUrl, $"asin-{asin}", cancellationToken).ConfigureAwait(false))
+            : null;
+
+        var edition = new Edition
+        {
+            BookId = bookId,
+            Format = EditionFormat.Audiobook,
+            Asin = asin,
+            Language = normalized.Language,
+            Publisher = normalized.PublisherName,
+            PublishDate = normalized.ReleaseDate,
+            Narrator = normalized.Narrators.Count > 0 ? string.Join(", ", normalized.Narrators) : null,
+            DurationSeconds = normalized.RuntimeLengthMinutes is { } minutes ? minutes * 60 : null,
+            AudioPublisher = normalized.PublisherName,
+            CoverPath = coverPath,
+        };
+        context.Editions.Add(edition);
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        if (book.PreferredEditionId is null)
+        {
+            book.PreferredEditionId = edition.Id;
+            await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return new AddEditionResult(true, edition.Id, null);
+    }
+
+    public async Task<AddEditionResult> AddManualEditionAsync(
+        int bookId,
+        EditionFormat format,
+        string? isbn,
+        int? numberOfPages,
+        string? language,
+        string? publisher,
+        string? publishDate,
+        string? narrator,
+        int? durationMinutes,
+        string? audioPublisher,
+        string? asin,
+        CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var book = await context.Books.FirstOrDefaultAsync(b => b.Id == bookId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Book {bookId} not found.");
+
+        var normalizedIsbn = !string.IsNullOrWhiteSpace(isbn) ? NormalizeIsbn(isbn) : null;
+
+        var edition = new Edition
+        {
+            BookId = bookId,
+            Format = format,
+            Isbn10 = normalizedIsbn is { Length: 10 } ? normalizedIsbn : null,
+            Isbn13 = normalizedIsbn is { Length: 13 } ? normalizedIsbn : null,
+            Asin = !string.IsNullOrWhiteSpace(asin) ? asin.Trim() : null,
+            NumberOfPages = numberOfPages,
+            Language = language,
+            Publisher = publisher,
+            PublishDate = publishDate,
+            Narrator = format == EditionFormat.Audiobook ? narrator : null,
+            DurationSeconds = format == EditionFormat.Audiobook && durationMinutes is { } minutes ? minutes * 60 : null,
+            AudioPublisher = format == EditionFormat.Audiobook ? audioPublisher : null,
+        };
+        context.Editions.Add(edition);
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        if (book.PreferredEditionId is null)
+        {
+            book.PreferredEditionId = edition.Id;
+            await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return new AddEditionResult(true, edition.Id, null);
     }
 
     private static double ClampToHalfStar(double rating) => Math.Round(Math.Clamp(rating, 0.5, 5.0) * 2, MidpointRounding.AwayFromZero) / 2;

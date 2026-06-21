@@ -11,4 +11,9 @@ public interface ICoverCacheService
 
     /// <summary>Returns the local file path for an author photo, fetching it on first miss.</summary>
     Task<string?> GetAuthorPhotoPathAsync(string authorOpenLibraryId, CoverSize size, CancellationToken cancellationToken = default);
+
+    /// <summary>Caches an arbitrary absolute image URL (e.g. an audnexus cover) under the given
+    /// cache key. Unlike the OL-keyed overloads above, no separate rate limiter applies here —
+    /// audiobook enrichment is a one-off per-edition fetch, not a bulk import.</summary>
+    Task<string?> GetExternalCoverPathAsync(string url, string cacheKey, CancellationToken cancellationToken = default);
 }

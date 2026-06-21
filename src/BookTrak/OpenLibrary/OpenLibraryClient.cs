@@ -109,4 +109,5 @@ internal static class RateLimiterKeys
 {
     public const string OpenLibraryApi = "ol-api";
     public const string OpenLibraryCovers = "ol-covers";
+    public const string AudnexusApi = "audnexus-api";
 }

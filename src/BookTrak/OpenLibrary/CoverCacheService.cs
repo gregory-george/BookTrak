@@ -16,6 +16,44 @@ internal sealed class CoverCacheService(
     public Task<string?> GetAuthorPhotoPathAsync(string authorOpenLibraryId, CoverSize size, CancellationToken cancellationToken = default)
         => GetOrFetchAsync($"a/olid/{authorOpenLibraryId}", Path.Combine(AppPaths.CoversDirectory, "authors"), authorOpenLibraryId, size, cancellationToken);
 
+    public async Task<string?> GetExternalCoverPathAsync(string url, string cacheKey, CancellationToken cancellationToken = default)
+    {
+        var localDir = Path.Combine(AppPaths.CoversDirectory, "books");
+        var localPath = Path.Combine(localDir, $"{cacheKey}.jpg");
+
+        if (File.Exists(localPath))
+        {
+            return localPath;
+        }
+
+        using var op = inFlightOps.Track();
+
+        try
+        {
+            using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            Directory.CreateDirectory(localDir);
+            var tempPath = localPath + ".tmp";
+
+            await using (var fileStream = File.Create(tempPath))
+            {
+                await response.Content.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            }
+
+            File.Move(tempPath, localPath, overwrite: true);
+            return localPath;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
+        {
+            logger.LogWarning(ex, "External cover fetch failed for {CacheKey} ({Url}) — will retry on next request", cacheKey, url);
+            return null;
+        }
+    }
+
     private async Task<string?> GetOrFetchAsync(string remotePathPrefix, string localDir, string id, CoverSize size, CancellationToken cancellationToken)
     {
         var sizeChar = ToSizeChar(size);

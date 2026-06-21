@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(taskkill //F //PID 22332)",
+      "Bash(rm -rf /c/Projects/BookTrak/publish-test)"
+    ]
+  }
+}
