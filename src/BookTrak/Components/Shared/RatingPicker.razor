@@ -1,0 +1,36 @@
+@* Half-star (0.5–5.0) interactive rating picker. Reuses the same stars-empty/stars-filled
+   overlay technique as the read-only StarRating display. *@
+<span class="rating-picker" @onmouseleave="() => _hover = null">
+    <span class="star-rating">
+        <span class="stars-empty">★★★★★</span>
+        <span class="stars-filled" style="width: @(FillPercent(_hover ?? Value ?? 0))%">★★★★★</span>
+        <span class="rating-picker-segments">
+            @for (var i = 1; i <= 10; i++)
+            {
+                var rating = i * 0.5;
+                <span class="rating-picker-segment" @onmouseenter="() => _hover = rating" @onclick="() => SelectAsync(rating)"></span>
+            }
+        </span>
+    </span>
+    @if (Value is { } v)
+    {
+        <span class="muted" style="margin-left:0.4rem;">@v.ToString("0.0")</span>
+        <button type="button" class="rating-picker-clear" title="Clear rating" @onclick="ClearAsync">✕</button>
+    }
+</span>
+
+@code {
+    [Parameter]
+    public double? Value { get; set; }
+
+    [Parameter]
+    public EventCallback<double?> ValueChanged { get; set; }
+
+    private double? _hover;
+
+    private static double FillPercent(double value) => Math.Clamp(value, 0, 5) / 5 * 100;
+
+    private Task SelectAsync(double rating) => ValueChanged.InvokeAsync(rating);
+
+    private Task ClearAsync() => ValueChanged.InvokeAsync(null);
+}

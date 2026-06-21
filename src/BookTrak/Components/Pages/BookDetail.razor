@@ -1,0 +1,384 @@
+@page "/books/{BookId:int}"
+@using BookTrak.Data.Entities
+@using BookTrak.Services
+@inject ILibraryQueryService LibraryQueryService
+@inject ILibraryWriteService LibraryWriteService
+
+<PageTitle>@(_result?.Book.Title ?? "Book") — BookTrak</PageTitle>
+
+@if (_notFound)
+{
+    <div class="empty-state">
+        <p>Book not found.</p>
+        <a href="/">← Back to library</a>
+    </div>
+}
+else if (_result is null)
+{
+    <p class="muted">Loading…</p>
+}
+else
+{
+    var book = _result.Book;
+
+    <div class="book-detail">
+        <div class="book-detail-cover">
+            @if (CoverWebPath is not null)
+            {
+                <img src="@CoverWebPath" alt="@book.Title cover" />
+            }
+            else
+            {
+                <div class="cover-placeholder" style="width:100%; aspect-ratio:2/3; display:flex; align-items:center; justify-content:center; background: var(--color-border); border-radius: var(--radius); font-size:3rem;">📕</div>
+            }
+        </div>
+        <div class="book-detail-info">
+            <h1>@book.Title</h1>
+            @if (!string.IsNullOrWhiteSpace(book.Subtitle))
+            {
+                <p class="book-detail-subtitle">@book.Subtitle</p>
+            }
+
+            @if (_result.Authors.Count > 0)
+            {
+                <p>
+                    by
+                    @for (var i = 0; i < _result.Authors.Count; i++)
+                    {
+                        var author = _result.Authors[i];
+                        <a href="@($"authors/{author.Id}")">@author.Name</a>
+                        @if (i < _result.Authors.Count - 1)
+                        {
+                            @:,
+                        }
+                    }
+                </p>
+            }
+
+            <div class="book-detail-meta">
+                <StatusBadge Status="book.Status" />
+                @if (book.IsIgnored)
+                {
+                    <span class="status-badge status-badge-wanttoread">ignored</span>
+                }
+                @if (book.MyRating is not null)
+                {
+                    <span>My rating: <StarRating Value="book.MyRating" ShowNumber="true" /></span>
+                }
+                @if (book.AverageRating is not null)
+                {
+                    <span>Average: <StarRating Value="book.AverageRating" ShowNumber="true" /> (@book.RatingsCount ratings)</span>
+                }
+                @if (book.Series is not null)
+                {
+                    <span>@book.Series.Name @(book.SeriesPosition is not null ? $"#{book.SeriesPosition}" : "")</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(book.FirstPublishDate))
+                {
+                    <span>First published @book.FirstPublishDate</span>
+                }
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(book.Description))
+            {
+                <p>@book.Description</p>
+            }
+
+            <div class="status-editor">
+                <div class="toolbar">
+                    <label>
+                        Status
+                        <select class="sort-select" value="@_status" @onchange="OnStatusChanged">
+                            <option value="@BookStatus.None">None</option>
+                            <option value="@BookStatus.WantToRead">Want to read</option>
+                            <option value="@BookStatus.Reading">Reading</option>
+                            <option value="@BookStatus.Read">Read</option>
+                        </select>
+                    </label>
+
+                    @if (_status is BookStatus.Reading or BookStatus.Read)
+                    {
+                        <label>
+                            Started
+                            <input class="search-box" type="date" value="@_dateStarted?.ToString("yyyy-MM-dd")" @onchange="OnDateStartedChanged" />
+                        </label>
+                    }
+
+                    @if (_status == BookStatus.Read)
+                    {
+                        <label>
+                            Finished
+                            <input class="search-box" type="date" value="@_dateRead?.ToString("yyyy-MM-dd")" @onchange="OnDateReadChanged" />
+                        </label>
+
+                        <label>
+                            My rating
+                            <RatingPicker Value="_myRating" ValueChanged="OnRatingChanged" />
+                        </label>
+
+                        @if (_result.Editions.Count > 0)
+                        {
+                            <label>
+                                Read edition
+                                <select class="sort-select" value="@_readEditionId" @onchange="OnReadEditionChanged">
+                                    <option value="">(unspecified)</option>
+                                    @foreach (var edition in _result.Editions)
+                                    {
+                                        <option value="@edition.Id">@edition.Format@(edition.Publisher is not null ? $" — {edition.Publisher}" : "")</option>
+                                    }
+                                </select>
+                            </label>
+                        }
+                    }
+
+                    <button class="btn-primary" disabled="@_savingStatus" @onclick="SaveStatusAsync">
+                        @(_savingStatus ? "Saving…" : "Save")
+                    </button>
+
+                    <button class="btn-primary" @onclick="ToggleBookIgnoredAsync">
+                        @(book.IsIgnored ? "Un-ignore" : "Ignore")
+                    </button>
+                </div>
+                @if (_statusMessage is not null)
+                {
+                    <p class="muted">@_statusMessage</p>
+                }
+            </div>
+
+            @if (book.OpenLibraryWorkId is not null)
+            {
+                <p class="muted" style="margin-top:1rem;">
+                    @if (SyncStatus.IsStale(book.LastSyncedUtc))
+                    {
+                        <span class="status-badge status-badge-wanttoread">stale</span>
+                    }
+                    @(book.LastSyncedUtc is { } synced ? $" Last synced {synced:yyyy-MM-dd HH:mm} UTC" : " Never synced")
+                    <button class="btn-primary" style="margin-left:0.75rem;" disabled="@_refreshing" @onclick="RefreshAsync">
+                        @(_refreshing ? "Refreshing…" : "Refresh")
+                    </button>
+                </p>
+                @if (_refreshMessage is not null)
+                {
+                    <p class="muted">@_refreshMessage</p>
+                }
+            }
+        </div>
+    </div>
+
+    <div class="page-header" style="margin-top:2rem;">
+        <h2 style="margin:0;">Editions (@_result.Editions.Count)</h2>
+        <label class="muted">
+            <input type="checkbox" checked="@_includeIgnoredEditions" @onchange="OnIncludeIgnoredEditionsChanged" />
+            Show ignored editions
+        </label>
+    </div>
+
+    @if (_result.Editions.Count == 0)
+    {
+        <div class="empty-state"><p>No editions recorded yet.</p></div>
+    }
+    else
+    {
+        <table class="editions-table">
+            <thead>
+                <tr>
+                    <th>Format</th>
+                    <th>ISBN</th>
+                    <th>Pages</th>
+                    <th>Language</th>
+                    <th>Publisher</th>
+                    <th>Published</th>
+                    <th>Narrator</th>
+                    <th>Duration</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var edition in _result.Editions)
+                {
+                    <tr>
+                        <td>
+                            @edition.Format
+                            @if (book.PreferredEditionId == edition.Id)
+                            {
+                                <span class="muted"> (preferred)</span>
+                            }
+                            @if (edition.IsIgnored)
+                            {
+                                <span class="muted"> (ignored)</span>
+                            }
+                        </td>
+                        <td>@(edition.Isbn13 ?? edition.Isbn10 ?? "—")</td>
+                        <td>@(edition.NumberOfPages?.ToString() ?? "—")</td>
+                        <td>@(edition.Language ?? "—")</td>
+                        <td>@(edition.Publisher ?? "—")</td>
+                        <td>@(edition.PublishDate ?? "—")</td>
+                        <td>@(edition.Narrator ?? "—")</td>
+                        <td>@FormatDuration(edition.DurationSeconds)</td>
+                        <td>
+                            <button class="btn-primary" @onclick="() => ToggleEditionIgnoredAsync(edition.Id)">
+                                @(edition.IsIgnored ? "Un-ignore" : "Ignore")
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    [Parameter]
+    public int BookId { get; set; }
+
+    private BookDetailResult? _result;
+    private bool _notFound;
+    private bool _refreshing;
+    private string? _refreshMessage;
+    private bool _includeIgnoredEditions;
+
+    private BookStatus _status;
+    private DateTime? _dateStarted;
+    private DateTime? _dateRead;
+    private double? _myRating;
+    private int? _readEditionId;
+    private bool _savingStatus;
+    private string? _statusMessage;
+
+    private string? CoverWebPath => CoverPaths.ToWebPath(_result?.Book.PreferredEdition?.CoverPath);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _result = null;
+        _notFound = false;
+        _refreshMessage = null;
+        _statusMessage = null;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var result = await LibraryQueryService.GetBookDetailAsync(BookId, _includeIgnoredEditions);
+        if (result is null)
+        {
+            _notFound = true;
+            return;
+        }
+
+        _result = result;
+        _status = result.Book.Status;
+        _dateStarted = result.Book.DateStarted;
+        _dateRead = result.Book.DateRead;
+        _myRating = result.Book.MyRating;
+        _readEditionId = result.Book.ReadEditionId;
+    }
+
+    private void OnStatusChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<BookStatus>(e.Value?.ToString(), out var status))
+        {
+            _status = status;
+            if (status == BookStatus.Reading && _dateStarted is null)
+            {
+                _dateStarted = DateTime.Today;
+            }
+            else if (status == BookStatus.Read && _dateRead is null)
+            {
+                _dateRead = DateTime.Today;
+            }
+        }
+    }
+
+    private void OnDateStartedChanged(ChangeEventArgs e)
+        => _dateStarted = DateTime.TryParse(e.Value?.ToString(), out var d) ? d : null;
+
+    private void OnDateReadChanged(ChangeEventArgs e)
+        => _dateRead = DateTime.TryParse(e.Value?.ToString(), out var d) ? d : null;
+
+    private void OnRatingChanged(double? value) => _myRating = value;
+
+    private void OnReadEditionChanged(ChangeEventArgs e)
+        => _readEditionId = int.TryParse(e.Value?.ToString(), out var id) ? id : null;
+
+    private async Task SaveStatusAsync()
+    {
+        _savingStatus = true;
+        _statusMessage = null;
+        StateHasChanged();
+
+        await LibraryWriteService.UpdateStatusAsync(
+            BookId,
+            _status,
+            _status is BookStatus.Reading or BookStatus.Read ? _dateStarted : null,
+            _status == BookStatus.Read ? _dateRead : null,
+            _status == BookStatus.Read ? _myRating : null,
+            _status == BookStatus.Read ? _readEditionId : null);
+
+        await LoadAsync();
+        _statusMessage = "Saved.";
+        _savingStatus = false;
+        StateHasChanged();
+    }
+
+    private async Task ToggleBookIgnoredAsync()
+    {
+        if (_result is null)
+        {
+            return;
+        }
+
+        await LibraryWriteService.SetBookIgnoredAsync(BookId, !_result.Book.IsIgnored);
+        await LoadAsync();
+    }
+
+    private async Task ToggleEditionIgnoredAsync(int editionId)
+    {
+        var edition = _result?.Editions.FirstOrDefault(e => e.Id == editionId);
+        if (edition is null)
+        {
+            return;
+        }
+
+        await LibraryWriteService.SetEditionIgnoredAsync(editionId, !edition.IsIgnored);
+        await LoadAsync();
+    }
+
+    private async Task OnIncludeIgnoredEditionsChanged(ChangeEventArgs e)
+    {
+        _includeIgnoredEditions = e.Value is true;
+        await LoadAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _refreshing = true;
+        _refreshMessage = null;
+        StateHasChanged();
+
+        var result = await LibraryWriteService.RefreshBookAsync(BookId);
+        _refreshMessage = result.Success
+            ? $"Updated{(result.NewEditionsAdded > 0 ? $" — {result.NewEditionsAdded} new edition{(result.NewEditionsAdded == 1 ? "" : "s")} added" : "")}."
+            : result.Error;
+
+        if (result.Success)
+        {
+            await LoadAsync();
+        }
+
+        _refreshing = false;
+        StateHasChanged();
+    }
+
+    private static string FormatDuration(int? seconds)
+    {
+        if (seconds is null)
+        {
+            return "—";
+        }
+
+        var span = TimeSpan.FromSeconds(seconds.Value);
+        return span.Hours > 0
+            ? $"{span.Hours}h {span.Minutes}m"
+            : $"{span.Minutes}m {span.Seconds}s";
+    }
+}

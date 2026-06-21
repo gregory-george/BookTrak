@@ -1,0 +1,177 @@
+@page "/add/author"
+@using BookTrak.Services
+@inject ILibraryWriteService LibraryWriteService
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Add Author — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Add Author</h1>
+</div>
+
+<div class="toolbar">
+    <input class="search-box"
+           type="search"
+           placeholder="Search Open Library authors…"
+           value="@_searchText"
+           @oninput="OnSearchInput" />
+</div>
+
+@if (_error is not null)
+{
+    <div class="empty-state"><p>@_error</p></div>
+}
+
+@if (_searching)
+{
+    <p class="muted">Searching…</p>
+}
+else if (!string.IsNullOrWhiteSpace(_searchText) && _results.Count == 0)
+{
+    <div class="empty-state"><p>No Open Library authors match "@_searchText".</p></div>
+}
+else if (_results.Count > 0)
+{
+    <table class="editions-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Born</th>
+                <th>Works</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var result in _results)
+            {
+                <tr>
+                    <td>@result.Name</td>
+                    <td>@(result.BirthDate ?? "—")</td>
+                    <td>@(result.WorkCount?.ToString() ?? "—")</td>
+                    <td>
+                        @if (result.AlreadyInLibrary)
+                        {
+                            <a href="@($"authors/{result.LocalAuthorId}")">Already in library</a>
+                        }
+                        else
+                        {
+                            <button class="btn-primary" disabled="@(_adding == result.OpenLibraryId)" @onclick="() => AddAsync(result)">
+                                @(_adding == result.OpenLibraryId ? "Adding…" : "Add")
+                            </button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<h2 style="margin-top:2rem;">No match on Open Library?</h2>
+<p class="muted">Add the author manually — you can enrich it later.</p>
+<div class="toolbar">
+    <input class="search-box" type="text" placeholder="Author name" @bind="_manualName" @bind:event="oninput" />
+    <button class="btn-primary" disabled="@(string.IsNullOrWhiteSpace(_manualName) || _addingManual)" @onclick="AddManualAsync">
+        @(_addingManual ? "Adding…" : "Add manually")
+    </button>
+</div>
+
+@code {
+    private string? _searchText;
+    private string? _manualName;
+    private List<AuthorSearchResult> _results = [];
+    private bool _searching;
+    private bool _addingManual;
+    private string? _adding;
+    private string? _error;
+    private CancellationTokenSource? _debounceCts;
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        _searchText = e.Value?.ToString();
+        _error = null;
+
+        _debounceCts?.Cancel();
+        _debounceCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _debounceCts = cts;
+        _ = DebounceSearchAsync(cts.Token);
+    }
+
+    private async Task DebounceSearchAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(300, token);
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_searchText))
+            {
+                _results = [];
+                StateHasChanged();
+                return;
+            }
+
+            _searching = true;
+            StateHasChanged();
+
+            try
+            {
+                _results = (await LibraryWriteService.SearchAuthorsAsync(_searchText, token)).ToList();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _error = "Couldn't reach Open Library — check your connection and try again.";
+                _results = [];
+            }
+
+            _searching = false;
+            StateHasChanged();
+        }
+        catch (TaskCanceledException)
+        {
+            // superseded by a newer keystroke
+        }
+    }
+
+    private async Task AddAsync(AuthorSearchResult result)
+    {
+        if (result.OpenLibraryId is null)
+        {
+            return;
+        }
+
+        _adding = result.OpenLibraryId;
+        StateHasChanged();
+
+        try
+        {
+            var added = await LibraryWriteService.AddAuthorFromOpenLibraryAsync(result.OpenLibraryId);
+            Nav.NavigateTo($"authors/{added.AuthorId}");
+        }
+        catch (Exception)
+        {
+            _error = "Couldn't add that author — check your connection and try again.";
+            _adding = null;
+        }
+    }
+
+    private async Task AddManualAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_manualName))
+        {
+            return;
+        }
+
+        _addingManual = true;
+        StateHasChanged();
+
+        var added = await LibraryWriteService.AddManualAuthorAsync(_manualName.Trim());
+        Nav.NavigateTo($"authors/{added.AuthorId}");
+    }
+
+    public void Dispose() => _debounceCts?.Cancel();
+}

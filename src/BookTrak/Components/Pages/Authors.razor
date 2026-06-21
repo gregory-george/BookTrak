@@ -1,0 +1,51 @@
+@page "/authors"
+@using BookTrak.Services
+@inject ILibraryQueryService LibraryQueryService
+
+<PageTitle>Authors — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Authors</h1>
+</div>
+
+@if (_authors is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (_authors.Count == 0)
+{
+    <div class="empty-state">
+        <p>No authors yet. Add a book to get started.</p>
+    </div>
+}
+else
+{
+    <p class="muted">@_authors.Count author@(_authors.Count == 1 ? "" : "s")</p>
+
+    <div class="author-grid">
+        @foreach (var author in _authors)
+        {
+            <a class="author-card" href="@($"authors/{author.Id}")">
+                @if (author.PhotoWebPath is not null)
+                {
+                    <img class="author-photo" src="@author.PhotoWebPath" alt="@author.Name" loading="lazy" />
+                }
+                else
+                {
+                    <div class="author-photo-placeholder">✍️</div>
+                }
+                <span class="author-name">@author.Name</span>
+                <span class="muted">@author.BookCount book@(author.BookCount == 1 ? "" : "s")</span>
+            </a>
+        }
+    </div>
+}
+
+@code {
+    private IReadOnlyList<AuthorSummary>? _authors;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _authors = await LibraryQueryService.GetAuthorsAsync();
+    }
+}

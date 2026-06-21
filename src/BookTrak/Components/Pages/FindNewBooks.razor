@@ -1,0 +1,110 @@
+@page "/authors/{AuthorId:int}/find-new"
+@using BookTrak.Services
+@inject ILibraryWriteService LibraryWriteService
+@inject NavigationManager Nav
+
+<PageTitle>Find New Books — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Find New Books@(_result is not null ? $" — {_result.AuthorName}" : "")</h1>
+    <a href="@($"authors/{AuthorId}")">← Back to author</a>
+</div>
+
+@if (_error is not null)
+{
+    <div class="empty-state"><p>@_error</p></div>
+}
+else if (_loading)
+{
+    <p class="muted">Fetching the full work list from Open Library — this can take a moment for prolific authors…</p>
+}
+else if (_result is { Works.Count: 0 })
+{
+    <div class="empty-state"><p>No gaps — every Open Library work for @_result.AuthorName is already in your library.</p></div>
+}
+else if (_result is not null)
+{
+    <p class="muted">@_result.Works.Count book@(_result.Works.Count == 1 ? "" : "s") not yet in your library.</p>
+
+    <table class="editions-table">
+        <thead>
+            <tr>
+                <th></th>
+                <th>Title</th>
+                <th>First published</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var work in _result.Works)
+            {
+                <tr>
+                    <td style="width:48px;">
+                        @if (work.CoverThumbnailUrl is not null)
+                        {
+                            <img src="@work.CoverThumbnailUrl" alt="" style="width:36px; height:54px; object-fit:cover; border-radius:3px;" />
+                        }
+                    </td>
+                    <td>@work.Title</td>
+                    <td>@(work.FirstPublishDate ?? "—")</td>
+                    <td>
+                        @if (_addedBookIds.TryGetValue(work.OpenLibraryWorkId, out var bookId))
+                        {
+                            <a href="@($"books/{bookId}")">Added →</a>
+                        }
+                        else
+                        {
+                            <button class="btn-primary" disabled="@(_adding == work.OpenLibraryWorkId)" @onclick="() => AddAsync(work)">
+                                @(_adding == work.OpenLibraryWorkId ? "Adding…" : "Add")
+                            </button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter]
+    public int AuthorId { get; set; }
+
+    private GapListResult? _result;
+    private bool _loading = true;
+    private string? _error;
+    private string? _adding;
+    private readonly Dictionary<string, int> _addedBookIds = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _result = await LibraryWriteService.GetGapListAsync(AuthorId);
+        }
+        catch (Exception)
+        {
+            _error = "Couldn't reach Open Library — check your connection and try again.";
+        }
+
+        _loading = false;
+    }
+
+    private async Task AddAsync(GapListWork work)
+    {
+        _adding = work.OpenLibraryWorkId;
+        StateHasChanged();
+
+        try
+        {
+            var added = await LibraryWriteService.AddBookFromOpenLibraryAsync(work.OpenLibraryWorkId);
+            _addedBookIds[work.OpenLibraryWorkId] = added.BookId;
+        }
+        catch (Exception)
+        {
+            _error = "Couldn't add that book — check your connection and try again.";
+        }
+
+        _adding = null;
+        StateHasChanged();
+    }
+}

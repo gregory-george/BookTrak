@@ -1,0 +1,153 @@
+@page "/authors/{AuthorId:int}"
+@using BookTrak.Services
+@inject ILibraryQueryService LibraryQueryService
+@inject ILibraryWriteService LibraryWriteService
+
+<PageTitle>@(_result?.Author.Name ?? "Author") — BookTrak</PageTitle>
+
+@if (_notFound)
+{
+    <div class="empty-state">
+        <p>Author not found.</p>
+        <a href="authors">← Back to authors</a>
+    </div>
+}
+else if (_result is null)
+{
+    <p class="muted">Loading…</p>
+}
+else
+{
+    var author = _result.Author;
+
+    <div class="book-detail">
+        <div class="book-detail-cover">
+            @if (PhotoWebPath is not null)
+            {
+                <img src="@PhotoWebPath" alt="@author.Name" />
+            }
+            else
+            {
+                <div class="author-photo-placeholder" style="width:100%; height:280px; border-radius: var(--radius);">✍️</div>
+            }
+        </div>
+        <div class="book-detail-info">
+            <h1>@author.Name</h1>
+            @if (!string.IsNullOrWhiteSpace(author.BirthDate) || !string.IsNullOrWhiteSpace(author.DeathDate))
+            {
+                <p class="muted">
+                    @author.BirthDate
+                    @if (!string.IsNullOrWhiteSpace(author.DeathDate))
+                    {
+                        @:– @author.DeathDate
+                    }
+                </p>
+            }
+            @if (!string.IsNullOrWhiteSpace(author.Bio))
+            {
+                <p>@author.Bio</p>
+            }
+
+            @if (author.OpenLibraryId is not null)
+            {
+                <p class="muted" style="margin-top:1rem;">
+                    @if (SyncStatus.IsStale(author.LastSyncedUtc))
+                    {
+                        <span class="status-badge status-badge-wanttoread">stale</span>
+                    }
+                    @(author.LastSyncedUtc is { } synced ? $" Last synced {synced:yyyy-MM-dd HH:mm} UTC" : " Never synced")
+                    <button class="btn-primary" style="margin-left:0.75rem;" disabled="@_refreshing" @onclick="RefreshAsync">
+                        @(_refreshing ? "Refreshing…" : "Refresh")
+                    </button>
+                </p>
+                @if (_refreshMessage is not null)
+                {
+                    <p class="muted">@_refreshMessage</p>
+                }
+            }
+        </div>
+    </div>
+
+    <div class="page-header" style="margin-top:2rem;">
+        <h2 style="margin:0;">Books (@_result.Books.Count)</h2>
+        <div class="toolbar">
+            <label class="muted">
+                <input type="checkbox" checked="@_includeIgnored" @onchange="OnIncludeIgnoredChanged" />
+                Show ignored
+            </label>
+            <a href="@($"authors/{AuthorId}/find-new")">Find new books →</a>
+        </div>
+    </div>
+
+    @if (_result.Books.Count == 0)
+    {
+        <div class="empty-state"><p>No books for this author yet.</p></div>
+    }
+    else
+    {
+        <div class="book-grid">
+            @foreach (var book in _result.Books)
+            {
+                <BookCard Book="book" />
+            }
+        </div>
+    }
+}
+
+@code {
+    [Parameter]
+    public int AuthorId { get; set; }
+
+    private AuthorDetailResult? _result;
+    private bool _notFound;
+    private bool _refreshing;
+    private string? _refreshMessage;
+    private bool _includeIgnored;
+
+    private string? PhotoWebPath => CoverPaths.ToWebPath(_result?.Author.PhotoPath);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _result = null;
+        _notFound = false;
+        _refreshMessage = null;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var result = await LibraryQueryService.GetAuthorDetailAsync(AuthorId, _includeIgnored);
+        if (result is null)
+        {
+            _notFound = true;
+        }
+        else
+        {
+            _result = result;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        _refreshing = true;
+        _refreshMessage = null;
+        StateHasChanged();
+
+        var result = await LibraryWriteService.RefreshAuthorAsync(AuthorId);
+        _refreshMessage = result.Success ? "Updated." : result.Error;
+
+        if (result.Success)
+        {
+            await LoadAsync();
+        }
+
+        _refreshing = false;
+        StateHasChanged();
+    }
+
+    private async Task OnIncludeIgnoredChanged(ChangeEventArgs e)
+    {
+        _includeIgnored = e.Value is true;
+        await LoadAsync();
+    }
+}

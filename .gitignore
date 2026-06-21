@@ -1,0 +1,12 @@
+bin/
+obj/
+.vs/
+
+# Portable app runtime artifacts (regenerated on launch)
+config.json
+BookTrak.lock
+BookTrak.db
+BookTrak.db-wal
+BookTrak.db-shm
+covers/
+backups/

@@ -1,0 +1,27 @@
+@using BookTrak.Data.Entities
+
+@if (Status != BookStatus.None)
+{
+    <span class="status-badge @CssClass">@Label</span>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public BookStatus Status { get; set; }
+
+    private string Label => Status switch
+    {
+        BookStatus.WantToRead => "Want to Read",
+        BookStatus.Reading => "Reading",
+        BookStatus.Read => "Read",
+        _ => "",
+    };
+
+    private string CssClass => Status switch
+    {
+        BookStatus.WantToRead => "status-badge-wanttoread",
+        BookStatus.Reading => "status-badge-reading",
+        BookStatus.Read => "status-badge-read",
+        _ => "",
+    };
+}

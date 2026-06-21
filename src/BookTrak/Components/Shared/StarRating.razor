@@ -1,0 +1,21 @@
+@if (Value is { } v)
+{
+    <span class="star-rating" title="@v.ToString("0.0")">
+        <span class="stars-empty">★★★★★</span>
+        <span class="stars-filled" style="width: @(FillPercent(v))%">★★★★★</span>
+    </span>
+    @if (ShowNumber)
+    {
+        <span class="muted">@v.ToString("0.0")</span>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public double? Value { get; set; }
+
+    [Parameter]
+    public bool ShowNumber { get; set; }
+
+    private static double FillPercent(double value) => Math.Clamp(value, 0, 5) / 5 * 100;
+}

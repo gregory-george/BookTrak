@@ -1,0 +1,30 @@
+@using BookTrak.Services
+
+<a class="book-card" href="@($"books/{Book.Id}")">
+    <div class="book-card-cover">
+        @if (Book.CoverWebPath is not null)
+        {
+            <img src="@Book.CoverWebPath" alt="@Book.Title cover" loading="lazy" />
+        }
+        else
+        {
+            <span class="cover-placeholder">📕</span>
+        }
+    </div>
+    <div class="book-card-body">
+        <div class="book-card-title">@Book.Title</div>
+        @if (!string.IsNullOrWhiteSpace(Book.AuthorNames))
+        {
+            <div class="book-card-author">@Book.AuthorNames</div>
+        }
+        <div class="book-card-footer">
+            <StarRating Value="@(Book.MyRating ?? Book.AverageRating)" />
+            <StatusBadge Status="Book.Status" />
+        </div>
+    </div>
+</a>
+
+@code {
+    [Parameter, EditorRequired]
+    public LibraryBookSummary Book { get; set; } = null!;
+}

@@ -1,0 +1,169 @@
+@page "/add/isbn"
+@using BookTrak.Services
+@inject ILibraryWriteService LibraryWriteService
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<PageTitle>Add by ISBN — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Add by ISBN</h1>
+</div>
+
+<p class="muted">Resolves a specific printing or audiobook edition. Type an ISBN, or scan a barcode.</p>
+
+<div class="toolbar">
+    <input class="search-box"
+           type="text"
+           placeholder="ISBN-10 or ISBN-13"
+           @bind="_isbn"
+           @bind:event="oninput"
+           @onkeydown="OnKeyDown" />
+    <button class="btn-primary" disabled="@(string.IsNullOrWhiteSpace(_isbn) || _resolving)" @onclick="ResolveAsync">
+        @(_resolving ? "Looking up…" : "Resolve")
+    </button>
+</div>
+
+<div style="margin-top:1.5rem;">
+    @if (!_scanning)
+    {
+        <button class="btn-primary" @onclick="StartScanAsync">📷 Scan barcode</button>
+    }
+    else
+    {
+        <button class="btn-primary" @onclick="StopScanAsync">Stop scanning</button>
+    }
+</div>
+
+<div style="margin-top:1rem; @(_scanning ? "" : "display:none;")">
+    <video id="barcode-video" style="width:100%; max-width:480px; border-radius: var(--radius); background:#000;" muted playsinline></video>
+</div>
+
+@if (_scanError is not null)
+{
+    <div class="empty-state"><p>@_scanError</p></div>
+}
+
+@if (_notFound)
+{
+    <div class="empty-state">
+        <p>Open Library has no edition for ISBN "@_lastLookedUp". Add the book manually instead.</p>
+        <a href="add/book">Go to manual add →</a>
+    </div>
+}
+
+@if (_lookupError is not null)
+{
+    <div class="empty-state"><p>@_lookupError</p></div>
+}
+
+@code {
+    private string? _isbn;
+    private string? _lastLookedUp;
+    private bool _resolving;
+    private bool _notFound;
+    private bool _scanning;
+    private string? _scanError;
+    private string? _lookupError;
+    private DotNetObjectReference<AddIsbn>? _dotNetRef;
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await ResolveAsync();
+        }
+    }
+
+    private async Task ResolveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_isbn))
+        {
+            return;
+        }
+
+        await StopScanAsync();
+
+        _resolving = true;
+        _notFound = false;
+        _lookupError = null;
+        _lastLookedUp = _isbn.Trim();
+        StateHasChanged();
+
+        try
+        {
+            var result = await LibraryWriteService.AddByIsbnAsync(_lastLookedUp);
+            if (result is null)
+            {
+                _notFound = true;
+                _resolving = false;
+                StateHasChanged();
+                return;
+            }
+
+            Nav.NavigateTo($"books/{result.BookId}");
+        }
+        catch (Exception)
+        {
+            _lookupError = "Couldn't reach Open Library — check your connection and try again.";
+            _resolving = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task StartScanAsync()
+    {
+        _scanError = null;
+        _scanning = true;
+        StateHasChanged();
+
+        // Let the video element render before JS tries to find it.
+        await Task.Delay(50);
+
+        _dotNetRef = DotNetObjectReference.Create(this);
+        var result = await JS.InvokeAsync<ScanStartResult>("bookTrakBarcodeScanner.start", "barcode-video", _dotNetRef);
+
+        if (!result.Ok)
+        {
+            _scanError = result.Error;
+            _scanning = false;
+            _dotNetRef?.Dispose();
+            _dotNetRef = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task StopScanAsync()
+    {
+        if (!_scanning)
+        {
+            return;
+        }
+
+        _scanning = false;
+        await JS.InvokeVoidAsync("bookTrakBarcodeScanner.stop");
+        _dotNetRef?.Dispose();
+        _dotNetRef = null;
+    }
+
+    [JSInvokable]
+    public async Task OnBarcodeDetected(string value)
+    {
+        _scanning = false;
+        _isbn = value;
+        await InvokeAsync(StateHasChanged);
+        await ResolveAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_scanning)
+        {
+            try { await JS.InvokeVoidAsync("bookTrakBarcodeScanner.stop"); } catch { /* circuit may already be gone */ }
+        }
+        _dotNetRef?.Dispose();
+    }
+
+    private sealed record ScanStartResult(bool Ok, string? Mode, string? Error);
+}

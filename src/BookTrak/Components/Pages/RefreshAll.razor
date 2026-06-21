@@ -1,0 +1,79 @@
+@page "/refresh-all"
+@using BookTrak.Services
+@inject ILibraryWriteService LibraryWriteService
+
+<PageTitle>Refresh All — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Refresh All</h1>
+</div>
+
+<p class="muted">
+    Re-pulls Open Library metadata for every author and book in your library that hasn't synced
+    in the last @SyncStatus.StaleThreshold.Days days. Already-fresh records are left untouched.
+    Your reading status, rating, ignored flag, and preferred edition are never changed.
+</p>
+
+<div class="toolbar">
+    <button class="btn-primary" disabled="@_running" @onclick="RunAsync">
+        @(_running ? "Refreshing…" : "Start refresh")
+    </button>
+</div>
+
+@if (_running || _items.Count > 0)
+{
+    <p class="muted" style="margin-top:1rem;">
+        @_items.Count refreshed so far
+        (@_items.Count(i => i.Success) succeeded, @_items.Count(i => !i.Success) failed)@(_running ? "…" : ".")
+    </p>
+
+    <table class="editions-table">
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Name</th>
+                <th>Result</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in _items.AsEnumerable().Reverse())
+            {
+                <tr>
+                    <td>@item.Kind</td>
+                    <td>@item.Name</td>
+                    <td>@(item.Success ? "✅ Updated" : $"⚠️ {item.Error}")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+else if (_finished)
+{
+    <div class="empty-state"><p>Everything was already fresh — nothing to refresh.</p></div>
+}
+
+@code {
+    private bool _running;
+    private bool _finished;
+    private readonly List<RefreshAllItem> _items = [];
+
+    private async Task RunAsync()
+    {
+        _running = true;
+        _finished = false;
+        _items.Clear();
+        StateHasChanged();
+
+        var progress = new Progress<RefreshAllItem>(item =>
+        {
+            _items.Add(item);
+            StateHasChanged();
+        });
+
+        await LibraryWriteService.RefreshAllAsync(progress);
+
+        _running = false;
+        _finished = true;
+        StateHasChanged();
+    }
+}
