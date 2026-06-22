@@ -26,6 +26,15 @@ else if (_result is not null)
 {
     <p class="muted">@_result.Works.Count book@(_result.Works.Count == 1 ? "" : "s") not yet in your library.</p>
 
+    <div>
+        @if (RemainingCount > 0)
+        {
+            <button class="btn-primary" disabled="@(_addingAll || _adding is not null)" @onclick="AddAllAsync">
+                @(_addingAll ? $"Adding… ({_addedCount}/{_addingAllTotal})" : $"Add All ({RemainingCount})")
+            </button>
+        }
+    </div>
+
     <table class="editions-table">
         <thead>
             <tr>
@@ -54,7 +63,7 @@ else if (_result is not null)
                         }
                         else
                         {
-                            <button class="btn-primary" disabled="@(_adding == work.OpenLibraryWorkId)" @onclick="() => AddAsync(work)">
+                            <button class="btn-primary" disabled="@(_adding == work.OpenLibraryWorkId || _addingAll)" @onclick="() => AddAsync(work)">
                                 @(_adding == work.OpenLibraryWorkId ? "Adding…" : "Add")
                             </button>
                         }
@@ -73,7 +82,12 @@ else if (_result is not null)
     private bool _loading = true;
     private string? _error;
     private string? _adding;
+    private bool _addingAll;
+    private int _addedCount;
+    private int _addingAllTotal;
     private readonly Dictionary<string, int> _addedBookIds = [];
+
+    private int RemainingCount => _result?.Works.Count(w => !_addedBookIds.ContainsKey(w.OpenLibraryWorkId)) ?? 0;
 
     protected override async Task OnInitializedAsync()
     {
@@ -105,6 +119,42 @@ else if (_result is not null)
         }
 
         _adding = null;
+        StateHasChanged();
+    }
+
+    private async Task AddAllAsync()
+    {
+        if (_result is null)
+        {
+            return;
+        }
+
+        var toAdd = _result.Works.Where(w => !_addedBookIds.ContainsKey(w.OpenLibraryWorkId)).ToList();
+
+        _addingAll = true;
+        _addedCount = 0;
+        _addingAllTotal = toAdd.Count;
+        var failures = 0;
+        StateHasChanged();
+
+        foreach (var work in toAdd)
+        {
+            try
+            {
+                var added = await LibraryWriteService.AddBookFromOpenLibraryAsync(work.OpenLibraryWorkId);
+                _addedBookIds[work.OpenLibraryWorkId] = added.BookId;
+            }
+            catch (Exception)
+            {
+                failures++;
+            }
+
+            _addedCount++;
+            StateHasChanged();
+        }
+
+        _error = failures > 0 ? $"Added {toAdd.Count - failures} of {toAdd.Count} books — {failures} failed. Check your connection and try again for the rest." : null;
+        _addingAll = false;
         StateHasChanged();
     }
 }
