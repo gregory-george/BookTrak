@@ -14,6 +14,12 @@ public enum LibrarySortOrder
     RatingDesc,
 }
 
+public enum AuthorSortOrder
+{
+    FirstNameAsc,
+    LastNameAsc,
+}
+
 /// <summary>Cumulative "X stars & up" buckets (selecting both 4+ and 3+ is redundant but
 /// harmless, since multi-select within a facet ORs together) plus an explicit bucket for books
 /// with no MyRating.</summary>
@@ -58,6 +64,8 @@ public sealed record LibraryBookSummary(
     double? AverageRating,
     DateTime DateAdded,
     string? PublishDate);
+
+public sealed record AuthorQuery(string? SearchText = null, AuthorSortOrder Sort = AuthorSortOrder.FirstNameAsc);
 
 public sealed record AuthorSummary(int Id, string Name, string? PhotoWebPath, int BookCount);
 
@@ -108,7 +116,7 @@ public interface ILibraryQueryService
     /// picking an option never makes its own facet list "disappear."</summary>
     Task<LibraryFacets> GetLibraryFacetsAsync(LibraryQuery query, CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<AuthorSummary>> GetAuthorsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<AuthorSummary>> GetAuthorsAsync(AuthorQuery query, CancellationToken cancellationToken = default);
 
     Task<AuthorDetailResult?> GetAuthorDetailAsync(int authorId, bool includeIgnored = false, CancellationToken cancellationToken = default);
 
@@ -228,17 +236,40 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
         return new LibraryFacets(statuses, formats, genres, series, ratingBuckets);
     }
 
-    public async Task<IReadOnlyList<AuthorSummary>> GetAuthorsAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<AuthorSummary>> GetAuthorsAsync(AuthorQuery query, CancellationToken cancellationToken = default)
     {
         await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
 
-        var authors = await context.Authors
-            .OrderBy(a => a.Name)
+        var authorsQuery = context.Authors.AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(query.SearchText))
+        {
+            var search = query.SearchText.Trim();
+            authorsQuery = authorsQuery.Where(a => EF.Functions.Like(a.Name, $"%{search}%"));
+        }
+
+        var authors = await authorsQuery
             .Select(a => new { a.Id, a.Name, a.PhotoPath, BookCount = a.BookAuthors.Count })
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return authors.Select(a => new AuthorSummary(a.Id, a.Name, ToWebPath(a.PhotoPath), a.BookCount)).ToList();
+        var ordered = query.Sort switch
+        {
+            AuthorSortOrder.LastNameAsc => authors.OrderBy(a => LastName(a.Name), StringComparer.OrdinalIgnoreCase).ThenBy(a => a.Name, StringComparer.OrdinalIgnoreCase),
+            _ => authors.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase),
+        };
+
+        return ordered.Select(a => new AuthorSummary(a.Id, a.Name, ToWebPath(a.PhotoPath), a.BookCount)).ToList();
+    }
+
+    /// <summary>Author.Name is a single free-text field (e.g. "Brandon Sanderson") with no
+    /// separate first/last columns, so "sort by last name" takes the last whitespace-separated
+    /// token as a best-effort approximation.</summary>
+    private static string LastName(string name)
+    {
+        var trimmed = name.Trim();
+        var lastSpace = trimmed.LastIndexOf(' ');
+        return lastSpace < 0 ? trimmed : trimmed[(lastSpace + 1)..];
     }
 
     public async Task<AuthorDetailResult?> GetAuthorDetailAsync(int authorId, bool includeIgnored = false, CancellationToken cancellationToken = default)

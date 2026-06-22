@@ -1,11 +1,23 @@
 @page "/authors"
 @using BookTrak.Services
 @inject ILibraryQueryService LibraryQueryService
+@implements IDisposable
 
 <PageTitle>Authors — BookTrak</PageTitle>
 
 <div class="page-header">
     <h1>Authors</h1>
+    <div class="toolbar">
+        <input class="search-box"
+               type="search"
+               placeholder="Search authors…"
+               value="@_searchText"
+               @oninput="OnSearchInput" />
+        <select class="sort-select" value="@_sort" @onchange="OnSortChanged">
+            <option value="@AuthorSortOrder.FirstNameAsc">First name (A–Z)</option>
+            <option value="@AuthorSortOrder.LastNameAsc">Last name (A–Z)</option>
+        </select>
+    </div>
 </div>
 
 @if (_authors is null)
@@ -15,7 +27,14 @@
 else if (_authors.Count == 0)
 {
     <div class="empty-state">
-        <p>No authors yet. Add a book to get started.</p>
+        @if (!string.IsNullOrWhiteSpace(_searchText))
+        {
+            <p>No authors match "@_searchText".</p>
+        }
+        else
+        {
+            <p>No authors yet. Add a book to get started.</p>
+        }
     </div>
 }
 else
@@ -43,9 +62,53 @@ else
 
 @code {
     private IReadOnlyList<AuthorSummary>? _authors;
+    private string? _searchText;
+    private AuthorSortOrder _sort = AuthorSortOrder.FirstNameAsc;
+    private CancellationTokenSource? _debounceCts;
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
     {
-        _authors = await LibraryQueryService.GetAuthorsAsync();
+        _authors = await LibraryQueryService.GetAuthorsAsync(new AuthorQuery(_searchText, _sort));
     }
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        _searchText = e.Value?.ToString();
+
+        _debounceCts?.Cancel();
+        _debounceCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _debounceCts = cts;
+        _ = DebounceLoadAsync(cts.Token);
+    }
+
+    private async Task DebounceLoadAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(300, token);
+            if (!token.IsCancellationRequested)
+            {
+                await LoadAsync();
+                StateHasChanged();
+            }
+        }
+        catch (TaskCanceledException)
+        {
+            // superseded by a newer keystroke
+        }
+    }
+
+    private async Task OnSortChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<AuthorSortOrder>(e.Value?.ToString(), out var sort))
+        {
+            _sort = sort;
+            await LoadAsync();
+        }
+    }
+
+    public void Dispose() => _debounceCts?.Cancel();
 }
