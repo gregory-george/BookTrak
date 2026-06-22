@@ -78,11 +78,25 @@ public class Program
         var inFlightOps = new InFlightOperationCounter();
         var circuitCounter = new CircuitCounter();
         var shutdownCts = new CancellationTokenSource();
+        var idleMonitorCts = new CancellationTokenSource();
         var hostStopped = new ManualResetEventSlim(false);
         var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var expectedShutdown = false;
+        var shutdownInitiated = 0;
 
         TrayApplicationContext? tray = null;
+
+        // Guards Quit, idle-timeout, and (indirectly) the startup-failure path so only one
+        // shutdown sequence ever runs, regardless of which trigger fires first.
+        void InitiateShutdown()
+        {
+            if (Interlocked.Exchange(ref shutdownInitiated, 1) != 0)
+            {
+                return;
+            }
+
+            idleMonitorCts.Cancel();
+            ThreadPool.QueueUserWorkItem(async _ => await RunShutdownSequenceAsync(tray, inFlightOps, circuitCounter, shutdownCts, hostStopped).ConfigureAwait(false));
+        }
 
         var hostThread = new Thread(() => RunHost(port, contactInfo, inFlightOps, circuitCounter, shutdownCts.Token, ready))
         {
@@ -96,7 +110,7 @@ public class Program
         {
             hostThread.Join();
             hostStopped.Set();
-            if (!expectedShutdown)
+            if (Volatile.Read(ref shutdownInitiated) == 0)
             {
                 tray?.OnHostCrashed();
             }
@@ -123,18 +137,25 @@ public class Program
                 ? ready.Task.Exception?.GetBaseException().Message
                 : "Timed out waiting for the local server to start.";
             MessageBox.Show($"BookTrak failed to start:\n{message}", "BookTrak", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            expectedShutdown = true;
+            Interlocked.Exchange(ref shutdownInitiated, 1);
+            idleMonitorCts.Cancel();
             shutdownCts.Cancel();
             return;
         }
 
         BrowserLauncher.Open(port);
 
-        tray = new TrayApplicationContext(port, requestShutdown: () =>
-        {
-            expectedShutdown = true;
-            ThreadPool.QueueUserWorkItem(async _ => await RunShutdownSequenceAsync(tray, inFlightOps, circuitCounter, shutdownCts, hostStopped).ConfigureAwait(false));
-        });
+        tray = new TrayApplicationContext(port, requestShutdown: InitiateShutdown);
+
+        // No browser tab connected within 10s of the last one disconnecting (closed tab/browser,
+        // not just a refresh) means nobody's using the app — finish in-flight work and exit, same
+        // as Quit, so the tray icon doesn't linger forever after the user is done.
+        ThreadPool.QueueUserWorkItem(async _ => await IdleShutdownMonitor.WatchAsync(
+            getConnectedCircuits: () => circuitCounter.Count,
+            onIdleTimeout: InitiateShutdown,
+            gracePeriod: TimeSpan.FromSeconds(10),
+            pollInterval: TimeSpan.FromSeconds(2),
+            cancellationToken: idleMonitorCts.Token).ConfigureAwait(false));
 
         Application.Run(tray);
     }
