@@ -132,6 +132,12 @@ public interface ILibraryWriteService
         string? audioPublisher,
         string? asin,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Manually sets (or clears, when <paramref name="seriesName"/> is blank) a book's
+    /// series and position. Finds an existing manually-named Series by case-insensitive name
+    /// match before creating a new one, so re-typing the same series name on multiple books
+    /// links them together instead of creating duplicates.</summary>
+    Task SetBookSeriesAsync(int bookId, string? seriesName, string? seriesPosition, CancellationToken cancellationToken = default);
 }
 
 internal sealed class LibraryWriteService(
@@ -655,10 +661,57 @@ internal sealed class LibraryWriteService(
         if (book.PreferredEditionId is null)
         {
             book.PreferredEditionId = edition.Id;
-            await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        // Don't clobber a series the user already set (manually, or from an earlier edition) —
+        // only fill it in when the book has none yet.
+        if (book.SeriesId is null && !string.IsNullOrWhiteSpace(normalized.SeriesName))
+        {
+            book.Series = await GetOrCreateSeriesAsync(context, normalized.SeriesName, cancellationToken).ConfigureAwait(false);
+            book.SeriesPosition = normalized.SeriesPosition;
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
         return new AddEditionResult(true, edition.Id, null);
+    }
+
+    public async Task SetBookSeriesAsync(int bookId, string? seriesName, string? seriesPosition, CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var book = await context.Books.FirstOrDefaultAsync(b => b.Id == bookId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Book {bookId} not found.");
+
+        if (string.IsNullOrWhiteSpace(seriesName))
+        {
+            book.SeriesId = null;
+            book.SeriesPosition = null;
+        }
+        else
+        {
+            book.Series = await GetOrCreateSeriesAsync(context, seriesName, cancellationToken).ConfigureAwait(false);
+            book.SeriesPosition = string.IsNullOrWhiteSpace(seriesPosition) ? null : seriesPosition.Trim();
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Open Library's own series data is too patchy to key off (per spec) — series are
+    /// purely local, identified by case-insensitive name match so audnexus and manual entry
+    /// naturally converge on the same row when they agree on a name.</summary>
+    private static async Task<Series> GetOrCreateSeriesAsync(BookTrakContext context, string name, CancellationToken cancellationToken)
+    {
+        var trimmed = name.Trim();
+        var existing = await context.Series.FirstOrDefaultAsync(s => s.Name.ToLower() == trimmed.ToLower(), cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var series = new Series { Name = trimmed };
+        context.Series.Add(series);
+        return series;
     }
 
     public async Task<AddEditionResult> AddManualEditionAsync(

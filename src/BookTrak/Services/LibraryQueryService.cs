@@ -65,6 +65,20 @@ public sealed record AuthorDetailResult(Author Author, IReadOnlyList<LibraryBook
 
 public sealed record BookDetailResult(Book Book, IReadOnlyList<Author> Authors, IReadOnlyList<Edition> Editions);
 
+public sealed record SeriesVolume(
+    int BookId,
+    string Title,
+    string? SeriesPosition,
+    BookStatus Status,
+    string? CoverWebPath);
+
+public sealed record SeriesDetailResult(
+    int SeriesId,
+    string SeriesName,
+    IReadOnlyList<SeriesVolume> Volumes,
+    SeriesVolume? NextUp,
+    IReadOnlyList<string> MissingPositions);
+
 public sealed record StatusFacetOption(BookStatus Status, int Count);
 
 public sealed record FormatFacetOption(EditionFormat Format, int Count);
@@ -99,6 +113,12 @@ public interface ILibraryQueryService
     Task<AuthorDetailResult?> GetAuthorDetailAsync(int authorId, bool includeIgnored = false, CancellationToken cancellationToken = default);
 
     Task<BookDetailResult?> GetBookDetailAsync(int bookId, bool includeIgnoredEditions = false, CancellationToken cancellationToken = default);
+
+    /// <summary>Series view: volumes ordered by SeriesPosition (numeric-aware — "3.5" sorts
+    /// between "3" and "4"; non-numeric/missing positions sort last by title), the "next up"
+    /// volume (first unread volume past the highest-numbered Read volume, or the first volume at
+    /// all if none are read yet), and any whole-number gaps in the position sequence.</summary>
+    Task<SeriesDetailResult?> GetSeriesDetailAsync(int seriesId, CancellationToken cancellationToken = default);
 }
 
 internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> contextFactory) : ILibraryQueryService
@@ -268,6 +288,71 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
 
         return new BookDetailResult(book, authors, editions);
     }
+
+    public async Task<SeriesDetailResult?> GetSeriesDetailAsync(int seriesId, CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var series = await context.Series
+            .Include(s => s.Books).ThenInclude(b => b.PreferredEdition)
+            .FirstOrDefaultAsync(s => s.Id == seriesId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (series is null)
+        {
+            return null;
+        }
+
+        var ordered = series.Books
+            .Where(b => !b.IsIgnored)
+            .Select(b => (Book: b, Position: ParsePosition(b.SeriesPosition)))
+            .OrderBy(x => x.Position ?? double.MaxValue)
+            .ThenBy(x => x.Book.Title, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var volumes = ordered.Select(x => new SeriesVolume(
+            x.Book.Id,
+            x.Book.Title,
+            x.Book.SeriesPosition,
+            x.Book.Status,
+            ToWebPath(x.Book.PreferredEdition?.CoverPath))).ToList();
+
+        var lastReadPosition = ordered
+            .Where(x => x.Book.Status == BookStatus.Read && x.Position is not null)
+            .Select(x => x.Position!.Value)
+            .DefaultIfEmpty(double.NegativeInfinity)
+            .Max();
+        var anyRead = ordered.Any(x => x.Book.Status == BookStatus.Read);
+
+        var nextUp = anyRead
+            ? ordered.FirstOrDefault(x => x.Book.Status != BookStatus.Read && x.Position > lastReadPosition).Book
+            : ordered.FirstOrDefault().Book;
+        var nextUpVolume = nextUp is null ? null : volumes.First(v => v.BookId == nextUp.Id);
+
+        // Gaps are only meaningful for whole-number main-sequence volumes — side novellas at
+        // "3.5" etc. don't count as a "volume 4" that could be missing.
+        var wholeNumberPositions = ordered
+            .Where(x => x.Position is { } p && Math.Abs(p - Math.Round(p)) < 0.0001)
+            .Select(x => (int)Math.Round(x.Position!.Value))
+            .ToHashSet();
+
+        var missing = new List<string>();
+        if (wholeNumberPositions.Count > 0)
+        {
+            for (var i = wholeNumberPositions.Min(); i <= wholeNumberPositions.Max(); i++)
+            {
+                if (!wholeNumberPositions.Contains(i))
+                {
+                    missing.Add(i.ToString());
+                }
+            }
+        }
+
+        return new SeriesDetailResult(series.Id, series.Name, volumes, nextUpVolume, missing);
+    }
+
+    private static double? ParsePosition(string? position)
+        => !string.IsNullOrWhiteSpace(position) && double.TryParse(position, out var value) ? value : null;
 
     /// <summary>Applies the ignored toggle, search-text match, and every active facet except
     /// <paramref name="exclude"/> (pass null for the result-list query, where every facet applies).</summary>

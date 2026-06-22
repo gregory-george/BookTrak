@@ -71,7 +71,7 @@ else
                 }
                 @if (book.Series is not null)
                 {
-                    <span>@book.Series.Name @(book.SeriesPosition is not null ? $"#{book.SeriesPosition}" : "")</span>
+                    <span><a href="@($"series/{book.Series.Id}")">@book.Series.Name</a> @(book.SeriesPosition is not null ? $"#{book.SeriesPosition}" : "")</span>
                 }
                 @if (!string.IsNullOrWhiteSpace(book.FirstPublishDate))
                 {
@@ -142,6 +142,26 @@ else
                 @if (_statusMessage is not null)
                 {
                     <p class="muted">@_statusMessage</p>
+                }
+            </div>
+
+            <div class="status-editor">
+                <div class="toolbar">
+                    <label>
+                        Series
+                        <input class="search-box" placeholder="e.g. The Stormlight Archive" value="@_seriesName" @oninput="@(e => _seriesName = e.Value?.ToString())" />
+                    </label>
+                    <label>
+                        Position
+                        <input class="search-box" style="width:6rem;" placeholder="e.g. 3.5" value="@_seriesPosition" @oninput="@(e => _seriesPosition = e.Value?.ToString())" />
+                    </label>
+                    <button class="btn-primary" disabled="@_savingSeries" @onclick="SaveSeriesAsync">
+                        @(_savingSeries ? "Saving…" : "Save series")
+                    </button>
+                </div>
+                @if (_seriesMessage is not null)
+                {
+                    <p class="muted">@_seriesMessage</p>
                 }
             </div>
 
@@ -327,6 +347,11 @@ else
     private bool _savingStatus;
     private string? _statusMessage;
 
+    private string? _seriesName;
+    private string? _seriesPosition;
+    private bool _savingSeries;
+    private string? _seriesMessage;
+
     private bool _showAddEdition;
     private EditionFormat _newEditionFormat;
     private string? _newEditionAsin;
@@ -366,6 +391,8 @@ else
         _dateRead = result.Book.DateRead;
         _myRating = result.Book.MyRating;
         _readEditionId = result.Book.ReadEditionId;
+        _seriesName = result.Book.Series?.Name;
+        _seriesPosition = result.Book.SeriesPosition;
     }
 
     private void OnStatusChanged(ChangeEventArgs e)
@@ -412,6 +439,19 @@ else
         await LoadAsync();
         _statusMessage = "Saved.";
         _savingStatus = false;
+        StateHasChanged();
+    }
+
+    private async Task SaveSeriesAsync()
+    {
+        _savingSeries = true;
+        _seriesMessage = null;
+        StateHasChanged();
+
+        await LibraryWriteService.SetBookSeriesAsync(BookId, _seriesName, _seriesPosition);
+        await LoadAsync();
+        _seriesMessage = "Saved.";
+        _savingSeries = false;
         StateHasChanged();
     }
 

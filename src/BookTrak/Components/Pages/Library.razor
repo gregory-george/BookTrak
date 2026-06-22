@@ -84,7 +84,7 @@
                 {
                     <label class="facet-option">
                         <input type="checkbox" checked="@_selectedSeriesIds.Contains(option.SeriesId)" @onchange="@(e => ToggleSeriesAsync(option.SeriesId, e.Value is true))" />
-                        @option.Name <span class="muted">(@option.Count)</span>
+                        <a href="@($"series/{option.SeriesId}")" @onclick:stopPropagation="true">@option.Name</a> <span class="muted">(@option.Count)</span>
                     </label>
                 }
             </div>

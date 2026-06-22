@@ -1,0 +1,97 @@
+@page "/series/{SeriesId:int}"
+@using BookTrak.Data.Entities
+@using BookTrak.Services
+@inject ILibraryQueryService LibraryQueryService
+
+<PageTitle>@(_result?.SeriesName ?? "Series") — BookTrak</PageTitle>
+
+@if (_notFound)
+{
+    <div class="empty-state">
+        <p>Series not found.</p>
+        <a href="/">← Back to library</a>
+    </div>
+}
+else if (_result is null)
+{
+    <p class="muted">Loading…</p>
+}
+else
+{
+    <div class="page-header">
+        <h1>@_result.SeriesName</h1>
+    </div>
+    <p class="muted">@_result.Volumes.Count volume@(_result.Volumes.Count == 1 ? "" : "s") in your library</p>
+
+    @if (_result.NextUp is not null)
+    {
+        <div class="status-editor">
+            <h2 style="margin-top:0;">Next up</h2>
+            <a href="@($"books/{_result.NextUp.BookId}")">
+                @_result.NextUp.Title @(_result.NextUp.SeriesPosition is not null ? $"(#{_result.NextUp.SeriesPosition})" : "")
+            </a>
+        </div>
+    }
+
+    @if (_result.MissingPositions.Count > 0)
+    {
+        <div class="status-editor">
+            <h2 style="margin-top:0;">Missing from your library</h2>
+            <p class="muted">Volume@(_result.MissingPositions.Count == 1 ? "" : "s") @string.Join(", ", _result.MissingPositions) — not in your library yet.</p>
+        </div>
+    }
+
+    @if (_result.Volumes.Count == 0)
+    {
+        <div class="empty-state"><p>No books in this series yet.</p></div>
+    }
+    else
+    {
+        <div class="book-grid book-row">
+            @foreach (var volume in _result.Volumes)
+            {
+                <a class="book-card" href="@($"books/{volume.BookId}")">
+                    <div class="book-card-cover">
+                        @if (volume.CoverWebPath is not null)
+                        {
+                            <img src="@volume.CoverWebPath" alt="@volume.Title cover" loading="lazy" />
+                        }
+                        else
+                        {
+                            <span class="cover-placeholder">📕</span>
+                        }
+                    </div>
+                    <div class="book-card-body">
+                        <div class="book-card-title">@(volume.SeriesPosition is not null ? $"#{volume.SeriesPosition} — " : "")@volume.Title</div>
+                        <div class="book-card-footer">
+                            <StatusBadge Status="volume.Status" />
+                        </div>
+                    </div>
+                </a>
+            }
+        </div>
+    }
+}
+
+@code {
+    [Parameter]
+    public int SeriesId { get; set; }
+
+    private SeriesDetailResult? _result;
+    private bool _notFound;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _result = null;
+        _notFound = false;
+
+        var result = await LibraryQueryService.GetSeriesDetailAsync(SeriesId);
+        if (result is null)
+        {
+            _notFound = true;
+            return;
+        }
+
+        _result = result;
+    }
+}
