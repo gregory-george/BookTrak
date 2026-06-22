@@ -1,0 +1,119 @@
+@page "/import"
+@using BookTrak.Services
+@using Microsoft.AspNetCore.Components.Forms
+@inject IImportService ImportService
+
+<PageTitle>Import — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Import from Goodreads / StoryGraph</h1>
+</div>
+
+<div class="status-editor">
+    <p class="muted">
+        Upload a Goodreads or StoryGraph CSV export. Each row is matched to a book by ISBN via
+        Open Library — your rating, date read, and shelf/status are applied to the matched book.
+        Rows already in your library are matched, not duplicated; rows with no ISBN or no Open
+        Library match are listed below instead of being silently skipped.
+    </p>
+    <InputFile OnChange="OnFileSelectedAsync" disabled="@_importing" />
+    @if (_importing)
+    {
+        <p class="muted" style="margin-top:0.75rem;">
+            Importing… @_imported imported, @_skipped skipped, @_unresolved unresolved (row @_processed)
+        </p>
+    }
+    @if (_parseError is not null)
+    {
+        <p class="muted" style="margin-top:0.75rem;">@_parseError</p>
+    }
+</div>
+
+@if (_result is not null)
+{
+    <div class="status-editor">
+        <h2 style="margin-top:0;">Done</h2>
+        <p>@_result.Imported imported, @_result.Skipped skipped, @_result.Unresolved unresolved.</p>
+    </div>
+
+    @if (_flagged.Count > 0)
+    {
+        <div class="page-header" style="margin-top:1.5rem;">
+            <h2 style="margin:0;">Needs attention (@_flagged.Count)</h2>
+        </div>
+        <table class="editions-table">
+            <thead>
+                <tr>
+                    <th>Row</th>
+                    <th>Title</th>
+                    <th>Outcome</th>
+                    <th>Detail</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _flagged)
+                {
+                    <tr>
+                        <td>@row.RowNumber</td>
+                        <td>@(row.Title ?? "—")</td>
+                        <td>@row.Outcome</td>
+                        <td>@row.Detail</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private bool _importing;
+    private int _imported;
+    private int _skipped;
+    private int _unresolved;
+    private int _processed;
+    private string? _parseError;
+    private ImportResult? _result;
+    private IReadOnlyList<ImportRowResult> _flagged = [];
+
+    private async Task OnFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        _importing = true;
+        _result = null;
+        _flagged = [];
+        _parseError = null;
+        _imported = _skipped = _unresolved = _processed = 0;
+        StateHasChanged();
+
+        string content;
+        try
+        {
+            using var reader = new StreamReader(e.File.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024));
+            content = await reader.ReadToEndAsync();
+        }
+        catch (Exception ex)
+        {
+            _parseError = $"Couldn't read the file: {ex.Message}";
+            _importing = false;
+            StateHasChanged();
+            return;
+        }
+
+        var progress = new Progress<ImportRowResult>(row =>
+        {
+            _processed++;
+            switch (row.Outcome)
+            {
+                case ImportRowOutcome.Imported: _imported++; break;
+                case ImportRowOutcome.Skipped: _skipped++; break;
+                case ImportRowOutcome.Unresolved: _unresolved++; break;
+            }
+            StateHasChanged();
+        });
+
+        _result = await ImportService.ImportAsync(content, progress);
+        _flagged = _result.Rows.Where(r => r.Outcome != ImportRowOutcome.Imported).ToList();
+
+        _importing = false;
+        StateHasChanged();
+    }
+}
