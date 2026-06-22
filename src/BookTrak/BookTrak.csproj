@@ -8,6 +8,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
     <InvariantGlobalization>false</InvariantGlobalization>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <!--
+      RuntimeIdentifier/SelfContained/PublishSingleFile are intentionally passed at publish time
+      (dotnet publish -r win-x64 -p:SelfContained=true -p:PublishSingleFile=true), not baked in
+      here, so `dotnet build`/`dotnet run` during development stay fast framework-dependent
+      builds. These two are no-ops unless PublishSingleFile=true is also passed, so they're safe
+      to leave on unconditionally.
+    -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <!--

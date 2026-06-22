@@ -41,7 +41,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = LoadAppIcon(),
             Text = "BookTrak — running",
             Visible = true,
             ContextMenuStrip = menu,
@@ -61,6 +61,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         else
         {
             _notifyIcon.Text = trimmed;
+        }
+    }
+
+    /// <summary>Uses the exe's own embedded icon (set via &lt;ApplicationIcon&gt; in the csproj)
+    /// so the tray icon matches the taskbar/Explorer icon — one source of truth instead of a
+    /// separately-embedded resource. Falls back to a system icon if extraction ever fails.</summary>
+    private static Icon LoadAppIcon()
+    {
+        try
+        {
+            return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
+        }
+        catch (Exception)
+        {
+            return SystemIcons.Application;
         }
     }
 
