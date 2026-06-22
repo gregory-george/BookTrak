@@ -5,6 +5,7 @@ using BookTrak.Data;
 using BookTrak.Hosting;
 using BookTrak.OpenLibrary;
 using BookTrak.Services;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
 
@@ -75,6 +76,7 @@ public class Program
     private static void RunApplication(int port, string contactInfo)
     {
         var inFlightOps = new InFlightOperationCounter();
+        var circuitCounter = new CircuitCounter();
         var shutdownCts = new CancellationTokenSource();
         var hostStopped = new ManualResetEventSlim(false);
         var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -82,7 +84,7 @@ public class Program
 
         TrayApplicationContext? tray = null;
 
-        var hostThread = new Thread(() => RunHost(port, contactInfo, inFlightOps, shutdownCts.Token, ready))
+        var hostThread = new Thread(() => RunHost(port, contactInfo, inFlightOps, circuitCounter, shutdownCts.Token, ready))
         {
             IsBackground = true,
             Name = "BookTrak-Host",
@@ -131,19 +133,48 @@ public class Program
         tray = new TrayApplicationContext(port, requestShutdown: () =>
         {
             expectedShutdown = true;
-            shutdownCts.Cancel();
-            ThreadPool.QueueUserWorkItem(_ =>
-            {
-                hostStopped.Wait(TimeSpan.FromSeconds(15));
-                tray?.Shutdown();
-            });
+            ThreadPool.QueueUserWorkItem(async _ => await RunShutdownSequenceAsync(tray, inFlightOps, circuitCounter, shutdownCts, hostStopped).ConfigureAwait(false));
         });
 
         Application.Run(tray);
     }
 
+    /// <summary>"Finish, then exit": stop accepting new work and wait for zero in-flight
+    /// background ops (OL/audnexus calls, cover fetches) AND zero connected UI circuits before
+    /// actually stopping Kestrel. Surfaces progress in the tray tooltip. A fallback deadline keeps
+    /// a stuck/never-disconnecting circuit from hanging shutdown forever.</summary>
+    private static async Task RunShutdownSequenceAsync(TrayApplicationContext? tray, InFlightOperationCounter inFlightOps, CircuitCounter circuitCounter, CancellationTokenSource shutdownCts, ManualResetEventSlim hostStopped)
+    {
+        await ShutdownCoordinator.WaitForIdleAsync(
+            getInFlightOps: () => inFlightOps.Count,
+            getConnectedCircuits: () => circuitCounter.Count,
+            onWaiting: (ops, circuits) => tray?.UpdateTooltip(BuildShutdownTooltip(ops, circuits)),
+            timeout: TimeSpan.FromSeconds(60),
+            pollInterval: TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
+
+        shutdownCts.Cancel();
+        hostStopped.Wait(TimeSpan.FromSeconds(15));
+        tray?.Shutdown();
+    }
+
+    private static string BuildShutdownTooltip(int inFlightOps, int connectedCircuits)
+    {
+        var parts = new List<string>();
+        if (inFlightOps > 0)
+        {
+            parts.Add($"{inFlightOps} download{(inFlightOps == 1 ? "" : "s")}");
+        }
+
+        if (connectedCircuits > 0)
+        {
+            parts.Add($"{connectedCircuits} open tab{(connectedCircuits == 1 ? "" : "s")}");
+        }
+
+        return $"BookTrak — finishing {string.Join(", ", parts)}…";
+    }
+
     /// <summary>Runs the Blazor/Kestrel host to completion. Intended to run on a background thread.</summary>
-    private static void RunHost(int port, string contactInfo, InFlightOperationCounter inFlightOps, CancellationToken shutdownToken, TaskCompletionSource<bool> ready)
+    private static void RunHost(int port, string contactInfo, InFlightOperationCounter inFlightOps, CircuitCounter circuitCounter, CancellationToken shutdownToken, TaskCompletionSource<bool> ready)
     {
         try
         {
@@ -151,6 +182,8 @@ public class Program
             builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
 
             builder.Services.AddSingleton(inFlightOps);
+            builder.Services.AddSingleton(circuitCounter);
+            builder.Services.AddScoped<CircuitHandler, TrackingCircuitHandler>();
             builder.Services.AddDbContextFactory<BookTrakContext>(options =>
                 options.UseSqlite($"Data Source={AppPaths.DatabaseFile}")
                     .AddInterceptors(new SqlitePragmaInterceptor()));
@@ -158,12 +191,15 @@ public class Program
             builder.Services.AddAudnexusServices(contactInfo);
             builder.Services.AddScoped<ILibraryQueryService, LibraryQueryService>();
             builder.Services.AddScoped<ILibraryWriteService, LibraryWriteService>();
+            builder.Services.AddScoped<IMaintenanceService, MaintenanceService>();
             builder.Services.AddRazorComponents()
                 .AddInteractiveServerComponents();
 
             var app = builder.Build();
 
-            DatabaseStartup.BackupAndMigrate(app.Services.GetRequiredService<IDbContextFactory<BookTrakContext>>());
+            var dbContextFactory = app.Services.GetRequiredService<IDbContextFactory<BookTrakContext>>();
+            DatabaseStartup.BackupAndMigrate(dbContextFactory);
+            OrphanCoverCleanup.SweepAsync(dbContextFactory).GetAwaiter().GetResult();
 
             if (!app.Environment.IsDevelopment())
             {

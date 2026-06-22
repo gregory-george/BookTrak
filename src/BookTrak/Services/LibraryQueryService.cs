@@ -11,9 +11,42 @@ public enum LibrarySortOrder
     TitleAsc,
     AuthorAsc,
     PublishDateDesc,
+    RatingDesc,
 }
 
-public sealed record LibraryQuery(string? SearchText = null, LibrarySortOrder Sort = LibrarySortOrder.DateAddedDesc, bool IncludeIgnored = false);
+/// <summary>Cumulative "X stars & up" buckets (selecting both 4+ and 3+ is redundant but
+/// harmless, since multi-select within a facet ORs together) plus an explicit bucket for books
+/// with no MyRating.</summary>
+public enum RatingBucket
+{
+    FourPlus,
+    ThreePlus,
+    TwoPlus,
+    OnePlus,
+    Unrated,
+}
+
+/// <summary>Which facet to skip when building a filtered query — used so a facet's own option
+/// counts reflect every OTHER active filter (the standard "narrow" faceted-search semantics)
+/// rather than always reflecting the full current selection.</summary>
+internal enum FacetKind
+{
+    Status,
+    Format,
+    Genre,
+    Series,
+    Rating,
+}
+
+public sealed record LibraryQuery(
+    string? SearchText = null,
+    LibrarySortOrder Sort = LibrarySortOrder.DateAddedDesc,
+    bool IncludeIgnored = false,
+    IReadOnlySet<BookStatus>? Statuses = null,
+    IReadOnlySet<EditionFormat>? Formats = null,
+    IReadOnlySet<int>? GenreIds = null,
+    IReadOnlySet<int>? SeriesIds = null,
+    IReadOnlySet<RatingBucket>? RatingBuckets = null);
 
 public sealed record LibraryBookSummary(
     int Id,
@@ -32,12 +65,34 @@ public sealed record AuthorDetailResult(Author Author, IReadOnlyList<LibraryBook
 
 public sealed record BookDetailResult(Book Book, IReadOnlyList<Author> Authors, IReadOnlyList<Edition> Editions);
 
+public sealed record StatusFacetOption(BookStatus Status, int Count);
+
+public sealed record FormatFacetOption(EditionFormat Format, int Count);
+
+public sealed record GenreFacetOption(int GenreId, string Name, int Count);
+
+public sealed record SeriesFacetOption(int SeriesId, string Name, int Count);
+
+public sealed record RatingFacetOption(RatingBucket Bucket, int Count);
+
+public sealed record LibraryFacets(
+    IReadOnlyList<StatusFacetOption> Statuses,
+    IReadOnlyList<FormatFacetOption> Formats,
+    IReadOnlyList<GenreFacetOption> Genres,
+    IReadOnlyList<SeriesFacetOption> Series,
+    IReadOnlyList<RatingFacetOption> RatingBuckets);
+
 /// <summary>Read-only query surface backing the browse UI. Every method opens a short-lived
 /// context via IDbContextFactory and disposes it before returning — never holds one across an
 /// await boundary that spans UI interaction.</summary>
 public interface ILibraryQueryService
 {
     Task<IReadOnlyList<LibraryBookSummary>> GetLibraryAsync(LibraryQuery query, CancellationToken cancellationToken = default);
+
+    /// <summary>Live per-facet option counts for the current query: each facet's own counts are
+    /// computed with every OTHER active facet (and the search text / ignored toggle) applied, so
+    /// picking an option never makes its own facet list "disappear."</summary>
+    Task<LibraryFacets> GetLibraryFacetsAsync(LibraryQuery query, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<AuthorSummary>> GetAuthorsAsync(CancellationToken cancellationToken = default);
 
@@ -52,21 +107,17 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
     {
         await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
 
-        var booksQuery = context.Books
-            .Include(b => b.PreferredEdition)
-            .Include(b => b.BookAuthors).ThenInclude(ba => ba.Author)
-            .AsQueryable();
+        var matchingIds = !string.IsNullOrWhiteSpace(query.SearchText)
+            ? await SearchBookIdsAsync(context, query.SearchText, cancellationToken).ConfigureAwait(false)
+            : null;
 
-        if (!query.IncludeIgnored)
-        {
-            booksQuery = booksQuery.Where(b => !b.IsIgnored);
-        }
-
-        if (!string.IsNullOrWhiteSpace(query.SearchText))
-        {
-            var matchingIds = await SearchBookIdsAsync(context, query.SearchText, cancellationToken).ConfigureAwait(false);
-            booksQuery = booksQuery.Where(b => matchingIds.Contains(b.Id));
-        }
+        var booksQuery = ApplyFilters(
+            context.Books
+                .Include(b => b.PreferredEdition)
+                .Include(b => b.BookAuthors).ThenInclude(ba => ba.Author),
+            query,
+            matchingIds,
+            exclude: null);
 
         booksQuery = query.Sort switch
         {
@@ -74,6 +125,10 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
             LibrarySortOrder.PublishDateDesc => booksQuery
                 .OrderByDescending(b => b.PreferredEdition != null ? b.PreferredEdition.PublishDate : null)
                 .ThenByDescending(b => b.DateAdded),
+            LibrarySortOrder.RatingDesc => booksQuery
+                .OrderByDescending(b => b.MyRating)
+                .ThenByDescending(b => b.AverageRating)
+                .ThenBy(b => b.Title),
             LibrarySortOrder.AuthorAsc => booksQuery, // author name isn't a column — sort after materializing below
             _ => booksQuery.OrderByDescending(b => b.DateAdded),
         };
@@ -87,6 +142,70 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
         }
 
         return ordered.Select(ToSummary).ToList();
+    }
+
+    public async Task<LibraryFacets> GetLibraryFacetsAsync(LibraryQuery query, CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var matchingIds = !string.IsNullOrWhiteSpace(query.SearchText)
+            ? await SearchBookIdsAsync(context, query.SearchText, cancellationToken).ConfigureAwait(false)
+            : null;
+
+        var statusRows = await ApplyFilters(context.Books, query, matchingIds, FacetKind.Status)
+            .GroupBy(b => b.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var statuses = statusRows.Select(r => new StatusFacetOption(r.Status, r.Count)).OrderBy(o => o.Status).ToList();
+
+        // SQLite's EF provider can't translate SelectMany over a navigation collection (it would
+        // require CROSS APPLY) — materialize the filtered book ids first, then join the child
+        // table (Editions/BookGenres) against that id list with a plain WHERE IN.
+        var formatBookIds = await ApplyFilters(context.Books, query, matchingIds, FacetKind.Format)
+            .Select(b => b.Id)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var formatPairs = await context.Editions
+            .Where(e => formatBookIds.Contains(e.BookId))
+            .Select(e => new { e.BookId, e.Format })
+            .Distinct()
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var formats = formatPairs.GroupBy(x => x.Format)
+            .Select(g => new FormatFacetOption(g.Key, g.Count()))
+            .OrderBy(o => o.Format).ToList();
+
+        var genreBookIds = await ApplyFilters(context.Books, query, matchingIds, FacetKind.Genre)
+            .Select(b => b.Id)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var genrePairs = await context.BookGenres
+            .Where(bg => genreBookIds.Contains(bg.BookId))
+            .Select(bg => new { bg.BookId, bg.GenreId, bg.Genre.Name })
+            .Distinct()
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var genres = genrePairs.GroupBy(x => new { x.GenreId, x.Name })
+            .Select(g => new GenreFacetOption(g.Key.GenreId, g.Key.Name, g.Count()))
+            .OrderByDescending(o => o.Count).ThenBy(o => o.Name).ToList();
+
+        var seriesRows = await ApplyFilters(context.Books, query, matchingIds, FacetKind.Series)
+            .Where(b => b.SeriesId != null)
+            .Select(b => new { SeriesId = b.SeriesId!.Value, b.Series!.Name })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var series = seriesRows.GroupBy(x => new { x.SeriesId, x.Name })
+            .Select(g => new SeriesFacetOption(g.Key.SeriesId, g.Key.Name, g.Count()))
+            .OrderByDescending(o => o.Count).ThenBy(o => o.Name).ToList();
+
+        var ratings = await ApplyFilters(context.Books, query, matchingIds, FacetKind.Rating)
+            .Select(b => b.MyRating)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var ratingBuckets = new List<RatingFacetOption>
+        {
+            new(RatingBucket.FourPlus, ratings.Count(r => r >= 4)),
+            new(RatingBucket.ThreePlus, ratings.Count(r => r >= 3)),
+            new(RatingBucket.TwoPlus, ratings.Count(r => r >= 2)),
+            new(RatingBucket.OnePlus, ratings.Count(r => r >= 1)),
+            new(RatingBucket.Unrated, ratings.Count(r => r is null)),
+        }.Where(o => o.Count > 0).ToList();
+
+        return new LibraryFacets(statuses, formats, genres, series, ratingBuckets);
     }
 
     public async Task<IReadOnlyList<AuthorSummary>> GetAuthorsAsync(CancellationToken cancellationToken = default)
@@ -148,6 +267,55 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
         var editions = book.Editions.Where(e => includeIgnoredEditions || !e.IsIgnored).OrderBy(e => e.Format).ToList();
 
         return new BookDetailResult(book, authors, editions);
+    }
+
+    /// <summary>Applies the ignored toggle, search-text match, and every active facet except
+    /// <paramref name="exclude"/> (pass null for the result-list query, where every facet applies).</summary>
+    private static IQueryable<Book> ApplyFilters(IQueryable<Book> source, LibraryQuery query, HashSet<int>? matchingIds, FacetKind? exclude)
+    {
+        var q = source;
+
+        if (!query.IncludeIgnored)
+        {
+            q = q.Where(b => !b.IsIgnored);
+        }
+
+        if (matchingIds is not null)
+        {
+            q = q.Where(b => matchingIds.Contains(b.Id));
+        }
+
+        if (exclude != FacetKind.Status && query.Statuses is { Count: > 0 } statuses)
+        {
+            q = q.Where(b => statuses.Contains(b.Status));
+        }
+
+        if (exclude != FacetKind.Format && query.Formats is { Count: > 0 } formats)
+        {
+            q = q.Where(b => b.Editions.Any(e => formats.Contains(e.Format)));
+        }
+
+        if (exclude != FacetKind.Genre && query.GenreIds is { Count: > 0 } genreIds)
+        {
+            q = q.Where(b => b.BookGenres.Any(bg => genreIds.Contains(bg.GenreId)));
+        }
+
+        if (exclude != FacetKind.Series && query.SeriesIds is { Count: > 0 } seriesIds)
+        {
+            q = q.Where(b => b.SeriesId != null && seriesIds.Contains(b.SeriesId.Value));
+        }
+
+        if (exclude != FacetKind.Rating && query.RatingBuckets is { Count: > 0 } buckets)
+        {
+            q = q.Where(b =>
+                (buckets.Contains(RatingBucket.FourPlus) && b.MyRating >= 4) ||
+                (buckets.Contains(RatingBucket.ThreePlus) && b.MyRating >= 3) ||
+                (buckets.Contains(RatingBucket.TwoPlus) && b.MyRating >= 2) ||
+                (buckets.Contains(RatingBucket.OnePlus) && b.MyRating >= 1) ||
+                (buckets.Contains(RatingBucket.Unrated) && b.MyRating == null));
+        }
+
+        return q;
     }
 
     private static LibraryBookSummary ToSummary(Book b) => new(

@@ -1,0 +1,79 @@
+@page "/settings"
+@using BookTrak.Hosting
+@using BookTrak.Services
+@inject IMaintenanceService MaintenanceService
+
+<PageTitle>Settings — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Settings</h1>
+</div>
+
+<div class="status-editor" style="margin-top:0;">
+    <h2 style="margin-top:0;">About this install</h2>
+    <div class="book-detail-meta">
+        <span>Port: @_config.Port</span>
+        <span>Schema version: @_config.SchemaVersion</span>
+        <span>Data folder: @AppPaths.RootDirectory</span>
+    </div>
+</div>
+
+<div class="status-editor">
+    <h2 style="margin-top:0;">Backups</h2>
+    <p class="muted">BookTrak backs up the database automatically on every startup and keeps the last 10. Use this to take an extra backup right now.</p>
+    <button class="btn-primary" disabled="@_backingUp" @onclick="BackupNowAsync">
+        @(_backingUp ? "Backing up…" : "Back up now")
+    </button>
+    @if (_backupMessage is not null)
+    {
+        <p class="muted">@_backupMessage</p>
+    }
+</div>
+
+<div class="status-editor">
+    <h2 style="margin-top:0;">Cover cache</h2>
+    <p class="muted">Deleting a book, edition, or author can leave its cached cover image behind. BookTrak prunes these automatically on startup; use this to clean them up immediately.</p>
+    <button class="btn-primary" disabled="@_cleaningUp" @onclick="CleanUpCoversAsync">
+        @(_cleaningUp ? "Cleaning up…" : "Clean up covers")
+    </button>
+    @if (_cleanupMessage is not null)
+    {
+        <p class="muted">@_cleanupMessage</p>
+    }
+</div>
+
+@code {
+    private AppConfig _config = AppConfig.LoadOrCreate();
+    private bool _backingUp;
+    private string? _backupMessage;
+    private bool _cleaningUp;
+    private string? _cleanupMessage;
+
+    private async Task BackupNowAsync()
+    {
+        _backingUp = true;
+        _backupMessage = null;
+        StateHasChanged();
+
+        var created = await MaintenanceService.BackupNowAsync();
+        _backupMessage = created ? "Backup created." : "No database exists yet — nothing to back up.";
+
+        _backingUp = false;
+        StateHasChanged();
+    }
+
+    private async Task CleanUpCoversAsync()
+    {
+        _cleaningUp = true;
+        _cleanupMessage = null;
+        StateHasChanged();
+
+        var count = await MaintenanceService.CleanUpCoversAsync();
+        _cleanupMessage = count == 0
+            ? "No orphaned covers found."
+            : $"Removed {count} orphaned cover{(count == 1 ? "" : "s")}.";
+
+        _cleaningUp = false;
+        StateHasChanged();
+    }
+}

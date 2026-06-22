@@ -1,4 +1,5 @@
 @page "/"
+@using BookTrak.Data.Entities
 @using BookTrak.Services
 @inject ILibraryQueryService LibraryQueryService
 @implements IDisposable
@@ -18,13 +19,97 @@
             <option value="@LibrarySortOrder.TitleAsc">Title (A–Z)</option>
             <option value="@LibrarySortOrder.AuthorAsc">Author (A–Z)</option>
             <option value="@LibrarySortOrder.PublishDateDesc">Publish date</option>
+            <option value="@LibrarySortOrder.RatingDesc">My rating</option>
         </select>
         <label class="muted">
             <input type="checkbox" checked="@_includeIgnored" @onchange="OnIncludeIgnoredChanged" />
             Show ignored
         </label>
+        <button class="btn-primary" @onclick="() => _showFilters = !_showFilters">
+            @(_showFilters ? "Hide filters" : "Filters") @(ActiveFacetCount > 0 ? $"({ActiveFacetCount})" : "")
+        </button>
     </div>
 </div>
+
+@if (_showFilters && _facets is not null)
+{
+    <div class="facet-panel">
+        @if (_facets.Statuses.Count > 0)
+        {
+            <div class="facet-group">
+                <h3>Status</h3>
+                @foreach (var option in _facets.Statuses)
+                {
+                    <label class="facet-option">
+                        <input type="checkbox" checked="@_selectedStatuses.Contains(option.Status)" @onchange="@(e => ToggleStatusAsync(option.Status, e.Value is true))" />
+                        @StatusLabel(option.Status) <span class="muted">(@option.Count)</span>
+                    </label>
+                }
+            </div>
+        }
+
+        @if (_facets.Formats.Count > 0)
+        {
+            <div class="facet-group">
+                <h3>Format</h3>
+                @foreach (var option in _facets.Formats)
+                {
+                    <label class="facet-option">
+                        <input type="checkbox" checked="@_selectedFormats.Contains(option.Format)" @onchange="@(e => ToggleFormatAsync(option.Format, e.Value is true))" />
+                        @option.Format <span class="muted">(@option.Count)</span>
+                    </label>
+                }
+            </div>
+        }
+
+        @if (_facets.RatingBuckets.Count > 0)
+        {
+            <div class="facet-group">
+                <h3>My rating</h3>
+                @foreach (var option in _facets.RatingBuckets)
+                {
+                    <label class="facet-option">
+                        <input type="checkbox" checked="@_selectedRatingBuckets.Contains(option.Bucket)" @onchange="@(e => ToggleRatingBucketAsync(option.Bucket, e.Value is true))" />
+                        @RatingBucketLabel(option.Bucket) <span class="muted">(@option.Count)</span>
+                    </label>
+                }
+            </div>
+        }
+
+        @if (_facets.Series.Count > 0)
+        {
+            <div class="facet-group">
+                <h3>Series</h3>
+                @foreach (var option in _facets.Series)
+                {
+                    <label class="facet-option">
+                        <input type="checkbox" checked="@_selectedSeriesIds.Contains(option.SeriesId)" @onchange="@(e => ToggleSeriesAsync(option.SeriesId, e.Value is true))" />
+                        @option.Name <span class="muted">(@option.Count)</span>
+                    </label>
+                }
+            </div>
+        }
+
+        @if (_facets.Genres.Count > 0)
+        {
+            <div class="facet-group">
+                <h3>Genre</h3>
+                @foreach (var option in _facets.Genres)
+                {
+                    <label class="facet-option">
+                        <input type="checkbox" checked="@_selectedGenreIds.Contains(option.GenreId)" @onchange="@(e => ToggleGenreAsync(option.GenreId, e.Value is true))" />
+                        @option.Name <span class="muted">(@option.Count)</span>
+                    </label>
+                }
+            </div>
+        }
+
+        @if (ActiveFacetCount > 0)
+        {
+            <button class="btn-primary" @onclick="ClearFacetsAsync">Clear filters</button>
+        }
+    </div>
+}
 
 @if (_loading && _rows.Count == 0)
 {
@@ -33,9 +118,9 @@
 else if (_rows.Count == 0)
 {
     <div class="empty-state">
-        @if (!string.IsNullOrWhiteSpace(_searchText))
+        @if (!string.IsNullOrWhiteSpace(_searchText) || ActiveFacetCount > 0)
         {
-            <p>No books match "@_searchText".</p>
+            <p>No books match the current search/filters.</p>
         }
         else
         {
@@ -68,15 +153,37 @@ else
     private LibrarySortOrder _sort = LibrarySortOrder.DateAddedDesc;
     private bool _includeIgnored;
     private bool _loading = true;
+    private bool _showFilters;
     private int _totalBooks;
     private CancellationTokenSource? _debounceCts;
 
+    private readonly HashSet<BookStatus> _selectedStatuses = [];
+    private readonly HashSet<EditionFormat> _selectedFormats = [];
+    private readonly HashSet<int> _selectedGenreIds = [];
+    private readonly HashSet<int> _selectedSeriesIds = [];
+    private readonly HashSet<RatingBucket> _selectedRatingBuckets = [];
+    private LibraryFacets? _facets;
+
+    private int ActiveFacetCount => _selectedStatuses.Count + _selectedFormats.Count + _selectedGenreIds.Count + _selectedSeriesIds.Count + _selectedRatingBuckets.Count;
+
     protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private LibraryQuery BuildQuery() => new(
+        _searchText,
+        _sort,
+        _includeIgnored,
+        _selectedStatuses.Count > 0 ? _selectedStatuses : null,
+        _selectedFormats.Count > 0 ? _selectedFormats : null,
+        _selectedGenreIds.Count > 0 ? _selectedGenreIds : null,
+        _selectedSeriesIds.Count > 0 ? _selectedSeriesIds : null,
+        _selectedRatingBuckets.Count > 0 ? _selectedRatingBuckets : null);
 
     private async Task LoadAsync()
     {
         _loading = true;
-        var books = await LibraryQueryService.GetLibraryAsync(new LibraryQuery(_searchText, _sort, _includeIgnored));
+        var query = BuildQuery();
+        var books = await LibraryQueryService.GetLibraryAsync(query);
+        _facets = await LibraryQueryService.GetLibraryFacetsAsync(query);
         _totalBooks = books.Count;
         _rows = books.Chunk(ColumnsPerRow).ToList();
         _loading = false;
@@ -129,6 +236,63 @@ else
         _includeIgnored = e.Value is true;
         await LoadAsync();
     }
+
+    private async Task ToggleStatusAsync(BookStatus status, bool selected)
+    {
+        if (selected) _selectedStatuses.Add(status); else _selectedStatuses.Remove(status);
+        await LoadAsync();
+    }
+
+    private async Task ToggleFormatAsync(EditionFormat format, bool selected)
+    {
+        if (selected) _selectedFormats.Add(format); else _selectedFormats.Remove(format);
+        await LoadAsync();
+    }
+
+    private async Task ToggleGenreAsync(int genreId, bool selected)
+    {
+        if (selected) _selectedGenreIds.Add(genreId); else _selectedGenreIds.Remove(genreId);
+        await LoadAsync();
+    }
+
+    private async Task ToggleSeriesAsync(int seriesId, bool selected)
+    {
+        if (selected) _selectedSeriesIds.Add(seriesId); else _selectedSeriesIds.Remove(seriesId);
+        await LoadAsync();
+    }
+
+    private async Task ToggleRatingBucketAsync(RatingBucket bucket, bool selected)
+    {
+        if (selected) _selectedRatingBuckets.Add(bucket); else _selectedRatingBuckets.Remove(bucket);
+        await LoadAsync();
+    }
+
+    private async Task ClearFacetsAsync()
+    {
+        _selectedStatuses.Clear();
+        _selectedFormats.Clear();
+        _selectedGenreIds.Clear();
+        _selectedSeriesIds.Clear();
+        _selectedRatingBuckets.Clear();
+        await LoadAsync();
+    }
+
+    private static string StatusLabel(BookStatus status) => status switch
+    {
+        BookStatus.WantToRead => "Want to read",
+        BookStatus.Reading => "Reading",
+        BookStatus.Read => "Read",
+        _ => "None",
+    };
+
+    private static string RatingBucketLabel(RatingBucket bucket) => bucket switch
+    {
+        RatingBucket.FourPlus => "4★ & up",
+        RatingBucket.ThreePlus => "3★ & up",
+        RatingBucket.TwoPlus => "2★ & up",
+        RatingBucket.OnePlus => "1★ & up",
+        _ => "Unrated",
+    };
 
     public void Dispose() => _debounceCts?.Cancel();
 

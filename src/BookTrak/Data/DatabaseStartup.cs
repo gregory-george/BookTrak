@@ -13,19 +13,20 @@ internal static class DatabaseStartup
 
     public static void BackupAndMigrate(IDbContextFactory<BookTrakContext> contextFactory)
     {
-        BackupIfExists();
+        CreateBackup();
 
         using var context = contextFactory.CreateDbContext();
         context.Database.Migrate();
-
-        PruneBackups();
     }
 
-    private static void BackupIfExists()
+    /// <summary>Copies BookTrak.db (+ config.json) to backups/ with a yyyyMMddTHHmmss suffix and
+    /// prunes anything past the last 10. Shared by the startup backup-then-migrate sequence and
+    /// the manual "Back up now" settings-page button. Returns false if there's no database yet.</summary>
+    public static bool CreateBackup()
     {
         if (!File.Exists(AppPaths.DatabaseFile))
         {
-            return; // first run — nothing to back up yet, Migrate() will create the db
+            return false; // first run — nothing to back up yet, Migrate() will create the db
         }
 
         Directory.CreateDirectory(AppPaths.BackupsDirectory);
@@ -37,6 +38,9 @@ internal static class DatabaseStartup
         {
             File.Copy(AppPaths.ConfigFile, Path.Combine(AppPaths.BackupsDirectory, $"config_{timestamp}.json"), overwrite: false);
         }
+
+        PruneBackups();
+        return true;
     }
 
     private static void PruneBackups()
