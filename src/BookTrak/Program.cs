@@ -193,6 +193,7 @@ public class Program
             builder.Services.AddScoped<ILibraryWriteService, LibraryWriteService>();
             builder.Services.AddScoped<IMaintenanceService, MaintenanceService>();
             builder.Services.AddScoped<IImportService, ImportService>();
+            builder.Services.AddScoped<IStatsQueryService, StatsQueryService>();
             builder.Services.AddRazorComponents()
                 .AddInteractiveServerComponents();
 

@@ -1,0 +1,194 @@
+@page "/stats"
+@using BookTrak.Services
+@inject IStatsQueryService StatsQueryService
+
+<PageTitle>Reading Stats — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Reading Stats</h1>
+</div>
+
+@if (_stats is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (_stats.TotalBooksRead == 0)
+{
+    <div class="empty-state"><p>Mark some books as Read to see stats here.</p></div>
+}
+else
+{
+    var stats = _stats;
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h2>Books read this year</h2>
+            <div class="stat-number">@stats.BooksReadThisYear</div>
+            <div class="stat-number-sub">@stats.TotalBooksRead total read</div>
+        </div>
+        <div class="stat-card">
+            <h2>Pages read</h2>
+            <div class="stat-number">@stats.TotalPagesRead.ToString("N0")</div>
+        </div>
+        <div class="stat-card">
+            <h2>Hours listened</h2>
+            <div class="stat-number">@stats.TotalHoursListened.ToString("N0")</div>
+        </div>
+        <div class="stat-card">
+            <h2>Most-read author</h2>
+            @if (stats.MostReadAuthor is { } author)
+            {
+                <div class="stat-number" style="font-size:1.3rem;"><a href="@($"authors/{author.AuthorId}")">@author.Name</a></div>
+                <div class="stat-number-sub">@author.ReadCount book@(author.ReadCount == 1 ? "" : "s") read</div>
+            }
+            else
+            {
+                <p class="muted">—</p>
+            }
+        </div>
+        <div class="stat-card">
+            <h2>Most-read narrator</h2>
+            @if (stats.MostReadNarrator is { } narrator)
+            {
+                <div class="stat-number" style="font-size:1.3rem;">@narrator.Name</div>
+                <div class="stat-number-sub">@narrator.ReadCount audiobook@(narrator.ReadCount == 1 ? "" : "s") read</div>
+            }
+            else
+            {
+                <p class="muted">—</p>
+            }
+        </div>
+        <div class="stat-card">
+            <h2>Longest read</h2>
+            @if (stats.LongestByPages is { } longest)
+            {
+                <div class="stat-number" style="font-size:1.3rem;"><a href="@($"books/{longest.BookId}")">@longest.Title</a></div>
+                <div class="stat-number-sub">@longest.Value.ToString("N0") pages</div>
+            }
+            else
+            {
+                <p class="muted">—</p>
+            }
+        </div>
+        <div class="stat-card">
+            <h2>Shortest read</h2>
+            @if (stats.ShortestByPages is { } shortest)
+            {
+                <div class="stat-number" style="font-size:1.3rem;"><a href="@($"books/{shortest.BookId}")">@shortest.Title</a></div>
+                <div class="stat-number-sub">@shortest.Value.ToString("N0") pages</div>
+            }
+            else
+            {
+                <p class="muted">—</p>
+            }
+        </div>
+        <div class="stat-card">
+            <h2>Longest listen</h2>
+            @if (stats.LongestByDurationMinutes is { } longestAudio)
+            {
+                <div class="stat-number" style="font-size:1.3rem;"><a href="@($"books/{longestAudio.BookId}")">@longestAudio.Title</a></div>
+                <div class="stat-number-sub">@FormatMinutes(longestAudio.Value)</div>
+            }
+            else
+            {
+                <p class="muted">—</p>
+            }
+        </div>
+        <div class="stat-card">
+            <h2>Shortest listen</h2>
+            @if (stats.ShortestByDurationMinutes is { } shortestAudio)
+            {
+                <div class="stat-number" style="font-size:1.3rem;"><a href="@($"books/{shortestAudio.BookId}")">@shortestAudio.Title</a></div>
+                <div class="stat-number-sub">@FormatMinutes(shortestAudio.Value)</div>
+            }
+            else
+            {
+                <p class="muted">—</p>
+            }
+        </div>
+
+        <div class="stat-card">
+            <h2>Rating distribution</h2>
+            @{ var maxRatingCount = Math.Max(1, stats.RatingDistribution.Max(r => r.Count)); }
+            @foreach (var bucket in stats.RatingDistribution)
+            {
+                <div class="bar-row">
+                    <span class="bar-row-label">@bucket.Rating.ToString("0.0")★</span>
+                    <span class="bar-track"><span class="bar-fill" style="width:@(bucket.Count * 100 / maxRatingCount)%"></span></span>
+                    <span class="bar-row-count">@bucket.Count</span>
+                </div>
+            }
+        </div>
+
+        <div class="stat-card">
+            <h2>Format breakdown</h2>
+            @{ var maxFormatCount = stats.FormatBreakdown.Count > 0 ? Math.Max(1, stats.FormatBreakdown.Max(f => f.Count)) : 1; }
+            @foreach (var format in stats.FormatBreakdown)
+            {
+                <div class="bar-row">
+                    <span class="bar-row-label">@format.Format</span>
+                    <span class="bar-track"><span class="bar-fill" style="width:@(format.Count * 100 / maxFormatCount)%"></span></span>
+                    <span class="bar-row-count">@format.Count</span>
+                </div>
+            }
+        </div>
+
+        <div class="stat-card">
+            <h2>Avg rating by author</h2>
+            @foreach (var a in stats.TopRatedAuthors)
+            {
+                <div class="bar-row">
+                    <span class="bar-row-label"><a href="@($"authors/{a.AuthorId}")">@a.Name</a></span>
+                    <span class="bar-track"><span class="bar-fill" style="width:@(a.AverageRating * 100 / 5)%"></span></span>
+                    <span class="bar-row-count">@a.AverageRating.ToString("0.0")</span>
+                </div>
+            }
+        </div>
+
+        <div class="stat-card">
+            <h2>Avg rating by genre</h2>
+            @foreach (var g in stats.TopRatedGenres)
+            {
+                <div class="bar-row">
+                    <span class="bar-row-label">@g.Name</span>
+                    <span class="bar-track"><span class="bar-fill" style="width:@(g.AverageRating * 100 / 5)%"></span></span>
+                    <span class="bar-row-count">@g.AverageRating.ToString("0.0")</span>
+                </div>
+            }
+        </div>
+
+        <div class="stat-card stat-card-wide">
+            <h2>Added vs. read — last 12 months</h2>
+            <table class="editions-table">
+                <thead>
+                    <tr><th>Month</th><th>Added</th><th>Read</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var month in stats.MonthlyTrend)
+                    {
+                        <tr>
+                            <td>@(new DateTime(month.Year, month.Month, 1).ToString("MMM yyyy"))</td>
+                            <td>@month.AddedCount</td>
+                            <td>@month.ReadCount</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@code {
+    private ReadingStats? _stats;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _stats = await StatsQueryService.GetStatsAsync();
+    }
+
+    private static string FormatMinutes(int minutes)
+    {
+        var span = TimeSpan.FromMinutes(minutes);
+        return span.Hours > 0 ? $"{span.Hours}h {span.Minutes}m" : $"{span.Minutes}m";
+    }
+}
