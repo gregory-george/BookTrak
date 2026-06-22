@@ -111,6 +111,9 @@ else if (_result is not null)
         try
         {
             var added = await LibraryWriteService.AddBookFromOpenLibraryAsync(work.OpenLibraryWorkId);
+            // Best-effort audiobook attach for single adds (the bulk "Add All" path skips this
+            // to stay fast and polite against the unofficial Audible endpoint).
+            await LibraryWriteService.TryAutoAttachAudiobookAsync(added.BookId);
             _addedBookIds[work.OpenLibraryWorkId] = added.BookId;
         }
         catch (Exception)

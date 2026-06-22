@@ -1,4 +1,5 @@
 using System.Windows.Forms;
+using BookTrak.Audible;
 using BookTrak.Audnexus;
 using BookTrak.Components;
 using BookTrak.Data;
@@ -210,6 +211,7 @@ public class Program
                     .AddInterceptors(new SqlitePragmaInterceptor()));
             builder.Services.AddOpenLibraryServices(contactInfo);
             builder.Services.AddAudnexusServices(contactInfo);
+            builder.Services.AddAudibleServices();
             builder.Services.AddScoped<ILibraryQueryService, LibraryQueryService>();
             builder.Services.AddScoped<ILibraryWriteService, LibraryWriteService>();
             builder.Services.AddScoped<IMaintenanceService, MaintenanceService>();

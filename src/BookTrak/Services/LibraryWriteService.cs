@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using BookTrak.Audible;
+using BookTrak.Audible.Models;
 using BookTrak.Audnexus;
 using BookTrak.Audnexus.Models;
 using BookTrak.Data;
@@ -44,6 +46,10 @@ public sealed record RefreshAllItem(string Kind, string Name, bool Success, stri
 public sealed record RefreshAllResult(int AuthorsRefreshed, int AuthorsFailed, int BooksRefreshed, int BooksFailed, IReadOnlyList<RefreshAllItem> Items);
 
 public sealed record AddEditionResult(bool Success, int? EditionId, string? Error);
+
+/// <summary>Result of an Audible catalog search for a book: the candidate audiobooks, plus an
+/// optional user-facing error when Audible's search was unavailable.</summary>
+public sealed record AudiobookSearchResult(IReadOnlyList<AudiobookCandidate> Candidates, string? Error);
 
 /// <summary>Re-sync staleness policy. No specific threshold is mandated by the spec — 30 days is
 /// a reasonable default for a personal, session-bounded app.</summary>
@@ -117,6 +123,18 @@ public interface ILibraryWriteService
     /// so the UI can offer manual entry when audnexus is unavailable or has no match.</summary>
     Task<AddEditionResult> AddAudiobookEditionByAsinAsync(int bookId, string asin, CancellationToken cancellationToken = default);
 
+    /// <summary>Searches Audible's catalog for audiobooks matching a book's title + primary author
+    /// (discovery only — see CLAUDE.md), returning candidates for the user to pick from. Returns
+    /// an Error string (and empty candidates) when Audible's search is unavailable rather than
+    /// throwing, so the UI can fall back to manual ASIN entry.</summary>
+    Task<AudiobookSearchResult> SearchAudiobookCandidatesAsync(int bookId, CancellationToken cancellationToken = default);
+
+    /// <summary>Best-effort: searches Audible for a matching audiobook and, only when there is a
+    /// single high-confidence match, attaches it via <see cref="AddAudiobookEditionByAsinAsync"/>.
+    /// Skips silently on no/ambiguous match or any failure — never throws. Returns true iff an
+    /// edition was attached. Used by the single-add flow.</summary>
+    Task<bool> TryAutoAttachAudiobookAsync(int bookId, CancellationToken cancellationToken = default);
+
     /// <summary>Manual edition entry fallback for any format (print/ebook/audiobook) — used when
     /// Open Library/audnexus don't have the printing, or audnexus is unavailable.</summary>
     Task<AddEditionResult> AddManualEditionAsync(
@@ -144,7 +162,8 @@ internal sealed class LibraryWriteService(
     IDbContextFactory<BookTrakContext> contextFactory,
     IOpenLibraryClient openLibraryClient,
     ICoverCacheService coverCache,
-    IAudiobookMetadataProvider audiobookMetadataProvider) : ILibraryWriteService
+    IAudiobookMetadataProvider audiobookMetadataProvider,
+    IAudiobookSearchProvider audiobookSearchProvider) : ILibraryWriteService
 {
     public async Task<IReadOnlyList<AuthorSearchResult>> SearchAuthorsAsync(string query, CancellationToken cancellationToken = default)
     {
@@ -674,6 +693,76 @@ internal sealed class LibraryWriteService(
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         return new AddEditionResult(true, edition.Id, null);
+    }
+
+    public async Task<AudiobookSearchResult> SearchAudiobookCandidatesAsync(int bookId, CancellationToken cancellationToken = default)
+    {
+        var (title, author) = await GetSearchTermsAsync(bookId, cancellationToken).ConfigureAwait(false);
+        if (title is null)
+        {
+            throw new InvalidOperationException($"Book {bookId} not found.");
+        }
+
+        try
+        {
+            var candidates = await audiobookSearchProvider.SearchAsync(title, author ?? string.Empty, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return new AudiobookSearchResult(candidates, null);
+        }
+        catch (AudibleUnavailableException ex)
+        {
+            return new AudiobookSearchResult([], ex.Message);
+        }
+    }
+
+    public async Task<bool> TryAutoAttachAudiobookAsync(int bookId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var (title, author, authors) = await GetMatchTermsAsync(bookId, cancellationToken).ConfigureAwait(false);
+            if (title is null)
+            {
+                return false;
+            }
+
+            var candidates = await audiobookSearchProvider.SearchAsync(title, author ?? string.Empty, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var match = AudiobookMatch.PickConfident(candidates, title, authors);
+            if (match is null)
+            {
+                return false;
+            }
+
+            var result = await AddAudiobookEditionByAsinAsync(bookId, match.Asin, cancellationToken).ConfigureAwait(false);
+            return result.Success;
+        }
+        catch (Exception)
+        {
+            // Best-effort: a failed audiobook lookup must never block adding the book.
+            return false;
+        }
+    }
+
+    private async Task<(string? Title, string? Author)> GetSearchTermsAsync(int bookId, CancellationToken cancellationToken)
+    {
+        var (title, author, _) = await GetMatchTermsAsync(bookId, cancellationToken).ConfigureAwait(false);
+        return (title, author);
+    }
+
+    /// <summary>Loads a book's title plus its author names (in BookAuthor order) for Audible
+    /// search/matching. Returns (null, null, []) when the book doesn't exist.</summary>
+    private async Task<(string? Title, string? Author, IReadOnlyList<string> Authors)> GetMatchTermsAsync(int bookId, CancellationToken cancellationToken)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var book = await context.Books
+            .Include(b => b.BookAuthors).ThenInclude(ba => ba.Author)
+            .FirstOrDefaultAsync(b => b.Id == bookId, cancellationToken).ConfigureAwait(false);
+        if (book is null)
+        {
+            return (null, null, []);
+        }
+
+        var authors = book.BookAuthors.Select(ba => ba.Author.Name).ToList();
+        return (book.Title, authors.FirstOrDefault(), authors);
     }
 
     public async Task SetBookSeriesAsync(int bookId, string? seriesName, string? seriesPosition, CancellationToken cancellationToken = default)

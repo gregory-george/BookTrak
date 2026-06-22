@@ -1,4 +1,5 @@
 @page "/books/{BookId:int}"
+@using BookTrak.Audible.Models
 @using BookTrak.Data.Entities
 @using BookTrak.Services
 @inject ILibraryQueryService LibraryQueryService
@@ -192,11 +193,62 @@ else
                 <input type="checkbox" checked="@_includeIgnoredEditions" @onchange="OnIncludeIgnoredEditionsChanged" />
                 Show ignored editions
             </label>
+            @if (!_result.Editions.Any(e => e.Format == EditionFormat.Audiobook))
+            {
+                <button class="btn-primary" disabled="@_searchingAudiobooks" @onclick="FindMatchingAudiobookAsync">
+                    @(_searchingAudiobooks ? "Searching…" : "Find matching audiobook")
+                </button>
+            }
             <button class="btn-primary" @onclick="ToggleAddEditionPanel">
                 @(_showAddEdition ? "Cancel" : "+ Add edition")
             </button>
         </div>
     </div>
+
+    @if (_audiobookCandidates is not null)
+    {
+        <div class="status-editor">
+            @if (_audiobookCandidates.Count == 0)
+            {
+                <p class="muted">@(_audiobookMessage ?? "No audiobook matches found on Audible. Add one manually with its ASIN below.")</p>
+            }
+            else
+            {
+                <p class="muted">Audible matches — pick the one to add as an audiobook edition:</p>
+                <table class="editions-table">
+                    <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>Author(s)</th>
+                            <th>Narrator(s)</th>
+                            <th>Publisher</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var candidate in _audiobookCandidates)
+                        {
+                            <tr>
+                                <td>@candidate.Title@(string.IsNullOrWhiteSpace(candidate.Subtitle) ? "" : $" — {candidate.Subtitle}")</td>
+                                <td>@(candidate.Authors.Count > 0 ? string.Join(", ", candidate.Authors) : "—")</td>
+                                <td>@(candidate.Narrators.Count > 0 ? string.Join(", ", candidate.Narrators) : "—")</td>
+                                <td>@(candidate.PublisherName ?? "—")</td>
+                                <td>
+                                    <button class="btn-primary" disabled="@(_addingEdition || _addedCandidateAsins.Contains(candidate.Asin))" @onclick="() => AddAudiobookCandidateAsync(candidate)">
+                                        @(_addedCandidateAsins.Contains(candidate.Asin) ? "Added" : "Add this audiobook")
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            @if (_audiobookMessage is not null && _audiobookCandidates.Count > 0)
+            {
+                <p class="muted">@_audiobookMessage</p>
+            }
+        </div>
+    }
 
     @if (_showAddEdition)
     {
@@ -365,6 +417,11 @@ else
     private bool _addingEdition;
     private string? _addEditionMessage;
 
+    private bool _searchingAudiobooks;
+    private IReadOnlyList<AudiobookCandidate>? _audiobookCandidates;
+    private string? _audiobookMessage;
+    private readonly HashSet<string> _addedCandidateAsins = [];
+
     private string? CoverWebPath => CoverPaths.ToWebPath(_result?.Book.PreferredEdition?.CoverPath);
 
     protected override async Task OnParametersSetAsync()
@@ -373,6 +430,9 @@ else
         _notFound = false;
         _refreshMessage = null;
         _statusMessage = null;
+        _audiobookCandidates = null;
+        _audiobookMessage = null;
+        _addedCandidateAsins.Clear();
         await LoadAsync();
     }
 
@@ -568,6 +628,44 @@ else
         else
         {
             _addEditionMessage = result.Error;
+        }
+
+        _addingEdition = false;
+        StateHasChanged();
+    }
+
+    private async Task FindMatchingAudiobookAsync()
+    {
+        _searchingAudiobooks = true;
+        _audiobookMessage = null;
+        _audiobookCandidates = null;
+        StateHasChanged();
+
+        var result = await LibraryWriteService.SearchAudiobookCandidatesAsync(BookId);
+        _audiobookCandidates = result.Candidates;
+        _audiobookMessage = result.Error is not null
+            ? "Audible search is unavailable right now — add an audiobook manually with its ASIN below."
+            : null;
+
+        _searchingAudiobooks = false;
+        StateHasChanged();
+    }
+
+    private async Task AddAudiobookCandidateAsync(AudiobookCandidate candidate)
+    {
+        _addingEdition = true;
+        _audiobookMessage = null;
+        StateHasChanged();
+
+        var result = await LibraryWriteService.AddAudiobookEditionByAsinAsync(BookId, candidate.Asin);
+        if (result.Success)
+        {
+            _addedCandidateAsins.Add(candidate.Asin);
+            await LoadAsync();
+        }
+        else
+        {
+            _audiobookMessage = result.Error;
         }
 
         _addingEdition = false;

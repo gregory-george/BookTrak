@@ -20,7 +20,7 @@ Greenfield. As of this writing the repo contains **only the requirements doc** �
   - BookTrak **`Book` ≈ Open Library Work** (work-level fields: title, description, subjects, average rating).
   - **`Edition`** = a specific printing (edition-level: ISBN, pages, language, cover, publisher, publish date). `pages` and `language` are **edition-level, not on Book**.
   - An **audiobook is just an `Edition` with `Format = Audiobook`** — no separate copies table. Audiobook-only fields (`Narrator`, `DurationSeconds`, `AudioPublisher`, `Asin`) hang off the edition.
-- **Data sources:** Open Library (`openlibrary.org`, no API key) for works/editions/authors; **audnexus** (`api.audnex.us`) for audiobooks, keyed by Audible **ASIN**. Manual entry is always an available fallback. **Never scrape Audible directly.**
+- **Data sources:** Open Library (`openlibrary.org`, no API key) for works/editions/authors; **audnexus** (`api.audnex.us`) for audiobooks, keyed by Audible **ASIN**. Manual entry is always an available fallback. **Never scrape Audible directly** — with one narrow, documented carve-out: the `BookTrak.Audible` namespace calls Audible's unofficial catalog-search JSON endpoint (`api.audible.com/1.0/catalog/products?keywords=…`) for **discovery only** (title+author → candidate ASIN, us region). The actual audiobook metadata fetch and edition creation still go through audnexus by ASIN; this path is best-effort with manual ASIN entry as fallback, sends no bot-shaped User-Agent, and never scrapes Audible HTML.
 
 ## Non-negotiable rules (these are the bug-magnets — see §4, §10, §14)
 - **EF access goes through `IDbContextFactory<BookTrakContext>` + short-lived contexts**, one per operation. Never share a `DbContext` across overlapping Blazor circuit events. This is the single most important EF decision.
@@ -81,5 +81,5 @@ dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=
 
 ## Accepted trade-offs (documented, not bugs)
 - **No app-level auth.** Loopback-only bind is the security control; any local process/user can reach the UI. Accepted for a single-user personal app.
-- **Title→ASIN search is deferred** — paste-the-ASIN is the reliable audiobook path.
+- **Title→ASIN discovery is best-effort, not guaranteed** — paste-the-ASIN remains the reliable audiobook path, but `BookTrak.Audible` now resolves title+author → candidate ASIN via Audible's unofficial catalog search (see Data sources carve-out). Single adds auto-attach only a single high-confidence match; bulk "Add All" skips the lookup; the book detail page offers a "Find matching audiobook" picker. Treat any of it failing/empty as normal and fall back to manual ASIN.
 - **CSV export is deferred** — `.db` + backups cover portability.

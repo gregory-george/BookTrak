@@ -152,6 +152,9 @@ else if (_results.Count > 0)
         try
         {
             var added = await LibraryWriteService.AddBookFromOpenLibraryAsync(result.OpenLibraryWorkId);
+            // Best-effort: attach a matching audiobook if we find a confident one. Never blocks
+            // navigation — failures/misses are swallowed inside the service.
+            await LibraryWriteService.TryAutoAttachAudiobookAsync(added.BookId);
             Nav.NavigateTo($"books/{added.BookId}");
         }
         catch (Exception)

@@ -4,7 +4,8 @@
       "Bash(taskkill //F //PID 22332)",
       "Bash(rm -rf /c/Projects/BookTrak/publish-test)",
       "Bash(taskkill //F //PID 4832)",
-      "Bash(rm -rf /c/Projects/BookTrak/publish-final)"
+      "Bash(rm -rf /c/Projects/BookTrak/publish-final)",
+      "Bash(dotnet build *)"
     ]
   }
 }
