@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text.RegularExpressions;
 using BookTrak.Data;
 using BookTrak.Data.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -63,7 +64,9 @@ public sealed record LibraryBookSummary(
     double? MyRating,
     double? AverageRating,
     DateTime DateAdded,
-    string? PublishDate);
+    string? PublishDate,
+    int? EarliestPublishYear,
+    int EditionCount);
 
 public sealed record AuthorQuery(string? SearchText = null, AuthorSortOrder Sort = AuthorSortOrder.FirstNameAsc);
 
@@ -142,6 +145,7 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
         var booksQuery = ApplyFilters(
             context.Books
                 .Include(b => b.PreferredEdition)
+                .Include(b => b.Editions)
                 .Include(b => b.BookAuthors).ThenInclude(ba => ba.Author),
             query,
             matchingIds,
@@ -278,6 +282,7 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
 
         var author = await context.Authors
             .Include(a => a.BookAuthors).ThenInclude(ba => ba.Book).ThenInclude(b => b.PreferredEdition)
+            .Include(a => a.BookAuthors).ThenInclude(ba => ba.Book).ThenInclude(b => b.Editions)
             .Include(a => a.BookAuthors).ThenInclude(ba => ba.Book).ThenInclude(b => b.BookAuthors).ThenInclude(ba => ba.Author)
             .FirstOrDefaultAsync(a => a.Id == authorId, cancellationToken)
             .ConfigureAwait(false);
@@ -434,18 +439,40 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
         return q;
     }
 
-    private static LibraryBookSummary ToSummary(Book b) => new(
-        b.Id,
-        b.Title,
-        ToWebPath(b.PreferredEdition?.CoverPath),
-        string.Join(", ", b.BookAuthors.Select(ba => ba.Author.Name)),
-        b.Status,
-        b.MyRating,
-        b.AverageRating,
-        b.DateAdded,
-        b.PreferredEdition?.PublishDate);
+    private static LibraryBookSummary ToSummary(Book b)
+    {
+        var visibleEditions = b.Editions.Where(e => !e.IsIgnored).ToList();
+        var years = visibleEditions.Select(e => ExtractYear(e.PublishDate)).Where(y => y is not null).Select(y => y!.Value).ToList();
+        var earliestYear = years.Count > 0 ? years.Min() : (int?)null;
+
+        return new(
+            b.Id,
+            b.Title,
+            ToWebPath(b.PreferredEdition?.CoverPath),
+            string.Join(", ", b.BookAuthors.Select(ba => ba.Author.Name)),
+            b.Status,
+            b.MyRating,
+            b.AverageRating,
+            b.DateAdded,
+            b.PreferredEdition?.PublishDate,
+            earliestYear,
+            visibleEditions.Count);
+    }
 
     private static string? ToWebPath(string? coverPath) => CoverPaths.ToWebPath(coverPath);
+
+    /// <summary>PublishDate is free text (e.g. "March 1954") — never parsed as DateTime; this
+    /// pulls the first 4-digit year for display/sort purposes only.</summary>
+    private static int? ExtractYear(string? publishDate)
+    {
+        if (string.IsNullOrWhiteSpace(publishDate))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(publishDate, @"\d{4}");
+        return match.Success ? int.Parse(match.Value) : null;
+    }
 
     /// <summary>Matches the FTS5 BookSearch table (kept in sync via triggers — see the
     /// AddFts5Search migration) and returns the set of matching Book ids.</summary>

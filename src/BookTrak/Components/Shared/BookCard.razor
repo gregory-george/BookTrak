@@ -17,6 +17,19 @@
         {
             <div class="book-card-author">@Book.AuthorNames</div>
         }
+        @if (Book.EarliestPublishYear is not null || Book.EditionCount > 0)
+        {
+            <div class="book-card-meta">
+                @if (Book.EarliestPublishYear is not null)
+                {
+                    <span>@Book.EarliestPublishYear</span>
+                }
+                @if (Book.EditionCount > 0)
+                {
+                    <span>@Book.EditionCount edition@(Book.EditionCount == 1 ? "" : "s")</span>
+                }
+            </div>
+        }
         <div class="book-card-footer">
             <StarRating Value="@(Book.MyRating ?? Book.AverageRating)" />
             <StatusBadge Status="Book.Status" />

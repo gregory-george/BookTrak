@@ -338,6 +338,7 @@ else
                 <tr>
                     <th>Format</th>
                     <th>ISBN</th>
+                    <th>ASIN</th>
                     <th>Pages</th>
                     <th>Language</th>
                     <th>Publisher</th>
@@ -363,6 +364,7 @@ else
                             }
                         </td>
                         <td>@(edition.Isbn13 ?? edition.Isbn10 ?? "—")</td>
+                        <td>@(edition.Asin ?? "—")</td>
                         <td>@(edition.NumberOfPages?.ToString() ?? "—")</td>
                         <td>@(edition.Language ?? "—")</td>
                         <td>@(edition.Publisher ?? "—")</td>

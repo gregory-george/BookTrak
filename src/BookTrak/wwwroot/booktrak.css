@@ -240,6 +240,13 @@ a:hover {
     white-space: nowrap;
 }
 
+.book-card-meta {
+    font-size: 0.78rem;
+    color: var(--color-text-muted);
+    display: flex;
+    gap: 0.5rem;
+}
+
 .book-card-footer {
     margin-top: auto;
     display: flex;
