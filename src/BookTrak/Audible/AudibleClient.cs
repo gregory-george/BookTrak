@@ -36,7 +36,8 @@ internal sealed class AudibleClient(
         // enough to rank candidates without a second round-trip. us region only (see CLAUDE.md).
         var url = $"1.0/catalog/products?keywords={Uri.EscapeDataString(keywords)}" +
                   $"&num_results={maxResults}&products_sort_by=Relevance" +
-                  "&response_groups=product_desc,contributors";
+                  "&response_groups=product_desc,contributors" +
+                  "&language=english";
 
         try
         {
@@ -59,6 +60,7 @@ internal sealed class AudibleClient(
 
             return products
                 .Where(p => !string.IsNullOrWhiteSpace(p.Asin) && !string.IsNullOrWhiteSpace(p.Title))
+                .Where(p => p.Language is null || p.Language.Equals("english", StringComparison.OrdinalIgnoreCase))
                 .Select(AudibleNormalizer.Normalize)
                 .ToList();
         }

@@ -24,6 +24,8 @@ internal sealed class RawAudibleProduct
 
     [JsonPropertyName("publisher_name")]
     public string? PublisherName { get; set; }
+
+    public string? Language { get; set; }
 }
 
 internal sealed class RawAudiblePerson
