@@ -34,9 +34,9 @@
 
 <div class="status-editor">
     <h2 style="margin-top:0;">Cover cache</h2>
-    <p class="muted">Deleting a book, edition, or author can leave its cached cover image behind. BookTrak prunes these automatically on startup; use this to clean them up immediately.</p>
+    <p class="muted">Deleting a book, edition, or author can leave its cached cover image behind; BookTrak prunes these automatically on startup. This also re-downloads any covers that are missing from the cache. Use it to tidy up immediately.</p>
     <button class="btn-primary" disabled="@_cleaningUp" @onclick="CleanUpCoversAsync">
-        @(_cleaningUp ? "Cleaning up…" : "Clean up covers")
+        @(_cleaningUp ? "Working…" : "Clean up covers")
     </button>
     @if (_cleanupMessage is not null)
     {
@@ -71,10 +71,19 @@
         _cleanupMessage = null;
         StateHasChanged();
 
-        var count = await MaintenanceService.CleanUpCoversAsync();
-        _cleanupMessage = count == 0
-            ? "No orphaned covers found."
-            : $"Removed {count} orphaned cover{(count == 1 ? "" : "s")}.";
+        var removed = await MaintenanceService.CleanUpCoversAsync();
+        var downloaded = await MaintenanceService.DownloadMissingCoversAsync();
+
+        var parts = new List<string>();
+        if (removed > 0)
+        {
+            parts.Add($"Removed {removed} orphaned cover{(removed == 1 ? "" : "s")}.");
+        }
+        if (downloaded > 0)
+        {
+            parts.Add($"Downloaded {downloaded} missing cover{(downloaded == 1 ? "" : "s")}.");
+        }
+        _cleanupMessage = parts.Count > 0 ? string.Join(" ", parts) : "Covers are up to date.";
 
         _cleaningUp = false;
         StateHasChanged();
