@@ -76,6 +76,24 @@ public sealed record AuthorDetailResult(Author Author, IReadOnlyList<LibraryBook
 
 public sealed record BookDetailResult(Book Book, IReadOnlyList<Author> Authors, IReadOnlyList<Edition> Editions);
 
+/// <summary>A single selectable edition for the Reading Log's "read edition" dropdown — just an
+/// id and a human label (e.g. "Audiobook — Macmillan Audio").</summary>
+public sealed record ReadingLogEdition(int Id, string Label);
+
+/// <summary>One editable row of the Reading Log grid. Unlike <see cref="LibraryBookSummary"/> this
+/// carries the reading-progress fields (started/finished dates, read edition) plus the per-book
+/// edition list needed to populate the read-edition picker inline.</summary>
+public sealed record ReadingLogRow(
+    int Id,
+    string Title,
+    string AuthorNames,
+    BookStatus Status,
+    DateTime? DateStarted,
+    DateTime? DateRead,
+    double? MyRating,
+    int? ReadEditionId,
+    IReadOnlyList<ReadingLogEdition> Editions);
+
 public sealed record SeriesVolume(
     int BookId,
     string Title,
@@ -124,6 +142,10 @@ public interface ILibraryQueryService
     Task<AuthorDetailResult?> GetAuthorDetailAsync(int authorId, bool includeIgnored = false, CancellationToken cancellationToken = default);
 
     Task<BookDetailResult?> GetBookDetailAsync(int bookId, bool includeIgnoredEditions = false, CancellationToken cancellationToken = default);
+
+    /// <summary>All non-ignored books with their reading-progress fields and a lightweight edition
+    /// list, ordered by title — backs the inline-editable Reading Log grid.</summary>
+    Task<IReadOnlyList<ReadingLogRow>> GetReadingLogAsync(CancellationToken cancellationToken = default);
 
     /// <summary>Series view: volumes ordered by SeriesPosition (numeric-aware — "3.5" sorts
     /// between "3" and "4"; non-numeric/missing positions sort last by title), the "next up"
@@ -324,6 +346,41 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
 
         return new BookDetailResult(book, authors, editions);
     }
+
+    public async Task<IReadOnlyList<ReadingLogRow>> GetReadingLogAsync(CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var books = await context.Books
+            .Where(b => !b.IsIgnored)
+            .Include(b => b.Editions)
+            .Include(b => b.BookAuthors).ThenInclude(ba => ba.Author)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return books
+            .OrderBy(b => b.Title, StringComparer.OrdinalIgnoreCase)
+            .Select(ToReadingLogRow)
+            .ToList();
+    }
+
+    private static ReadingLogRow ToReadingLogRow(Book b) => new(
+        b.Id,
+        b.Title,
+        string.Join(", ", b.BookAuthors.Select(ba => ba.Author.Name)),
+        b.Status,
+        b.DateStarted,
+        b.DateRead,
+        b.MyRating,
+        b.ReadEditionId,
+        b.Editions
+            .Where(e => !e.IsIgnored)
+            .OrderBy(e => e.Format)
+            .Select(e => new ReadingLogEdition(e.Id, EditionLabel(e)))
+            .ToList());
+
+    private static string EditionLabel(Edition e)
+        => e.Publisher is { Length: > 0 } publisher ? $"{e.Format} — {publisher}" : e.Format.ToString();
 
     public async Task<SeriesDetailResult?> GetSeriesDetailAsync(int seriesId, CancellationToken cancellationToken = default)
     {

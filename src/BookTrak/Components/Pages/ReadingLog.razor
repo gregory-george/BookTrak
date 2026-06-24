@@ -1,0 +1,365 @@
+@page "/reading-log"
+@using System.Globalization
+@using BookTrak.Data.Entities
+@using BookTrak.Services
+@inject ILibraryQueryService LibraryQueryService
+@inject ILibraryWriteService LibraryWriteService
+@inject IJSRuntime JS
+
+<PageTitle>Reading Log — BookTrak</PageTitle>
+
+<div class="page-header">
+    <h1>Reading Log</h1>
+</div>
+
+@if (_loading)
+{
+    <p class="muted">Loading…</p>
+}
+else if (_rows.Count == 0)
+{
+    <div class="empty-state">
+        <p>Your library is empty. Add a book to start tracking your reading.</p>
+    </div>
+}
+else
+{
+    <p class="muted">@_rows.Count book@(_rows.Count == 1 ? "" : "s") · changes save automatically · click a column to sort, Ctrl-click to add a level</p>
+
+    <div class="library-scroll">
+        <table class="editions-table reading-log-table">
+            <thead>
+                <tr>
+                    <th class="sortable" @onclick="e => OnHeaderClick(ReadingLogColumn.Title, e)">Title@(SortIndicator(ReadingLogColumn.Title))</th>
+                    <th class="sortable" @onclick="e => OnHeaderClick(ReadingLogColumn.Author, e)">Author@(SortIndicator(ReadingLogColumn.Author))</th>
+                    <th class="sortable" @onclick="e => OnHeaderClick(ReadingLogColumn.Status, e)">Status@(SortIndicator(ReadingLogColumn.Status))</th>
+                    <th class="sortable" @onclick="e => OnHeaderClick(ReadingLogColumn.Started, e)">Started@(SortIndicator(ReadingLogColumn.Started))</th>
+                    <th class="sortable" @onclick="e => OnHeaderClick(ReadingLogColumn.Finished, e)">Finished@(SortIndicator(ReadingLogColumn.Finished))</th>
+                    <th class="sortable" @onclick="e => OnHeaderClick(ReadingLogColumn.Rating, e)">My rating@(SortIndicator(ReadingLogColumn.Rating))</th>
+                    <th class="sortable" @onclick="e => OnHeaderClick(ReadingLogColumn.ReadEdition, e)">Read edition@(SortIndicator(ReadingLogColumn.ReadEdition))</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                <Virtualize Context="row" Items="_rows" SpacerElement="tr" ItemSize="46">
+                    <tr>
+                        <td><a href="@($"books/{row.Id}")">@row.Title</a></td>
+                        <td class="muted">@(string.IsNullOrWhiteSpace(row.AuthorNames) ? "—" : row.AuthorNames)</td>
+                        <td>
+                            <select class="sort-select" value="@row.Status" @onchange="@(e => OnStatusChangedAsync(row, e))">
+                                <option value="@BookStatus.None">None</option>
+                                <option value="@BookStatus.WantToRead">Want to read</option>
+                                <option value="@BookStatus.Reading">Reading</option>
+                                <option value="@BookStatus.Read">Read</option>
+                            </select>
+                        </td>
+                        <td>
+                            @if (row.Status is BookStatus.Reading or BookStatus.Read)
+                            {
+                                <input class="search-box" type="date" value="@row.DateStarted?.ToString("yyyy-MM-dd")" @onchange="@(e => OnDateStartedChangedAsync(row, e))" @onpaste:preventDefault="true" @onpaste="@(() => OnDatePasteAsync(row, isStarted: true))" />
+                            }
+                            else
+                            {
+                                <span class="muted">—</span>
+                            }
+                        </td>
+                        <td>
+                            @if (row.Status == BookStatus.Read)
+                            {
+                                <input class="search-box" type="date" value="@row.DateRead?.ToString("yyyy-MM-dd")" @onchange="@(e => OnDateReadChangedAsync(row, e))" @onpaste:preventDefault="true" @onpaste="@(() => OnDatePasteAsync(row, isStarted: false))" />
+                            }
+                            else
+                            {
+                                <span class="muted">—</span>
+                            }
+                        </td>
+                        <td>
+                            @if (row.Status == BookStatus.Read)
+                            {
+                                <RatingPicker Value="row.MyRating" ValueChanged="@(v => OnRatingChangedAsync(row, v))" />
+                            }
+                            else
+                            {
+                                <span class="muted">—</span>
+                            }
+                        </td>
+                        <td>
+                            @if (row.Status == BookStatus.Read && row.Editions.Count > 0)
+                            {
+                                <select class="sort-select" value="@row.ReadEditionId" @onchange="@(e => OnReadEditionChangedAsync(row, e))">
+                                    <option value="">(unspecified)</option>
+                                    @foreach (var edition in row.Editions)
+                                    {
+                                        <option value="@edition.Id">@edition.Label</option>
+                                    }
+                                </select>
+                            }
+                            else
+                            {
+                                <span class="muted">—</span>
+                            }
+                        </td>
+                        <td class="reading-log-save">
+                            @switch (row.SaveState)
+                            {
+                                case RowSaveState.Saving:
+                                    <span class="muted">Saving…</span>
+                                    break;
+                                case RowSaveState.Saved:
+                                    <span class="muted">Saved ✓</span>
+                                    break;
+                            }
+                        </td>
+                    </tr>
+                </Virtualize>
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private enum RowSaveState { None, Saving, Saved }
+
+    private enum ReadingLogColumn { Title, Author, Status, Started, Finished, Rating, ReadEdition }
+
+    private sealed class RowState(ReadingLogRow source)
+    {
+        public int Id { get; } = source.Id;
+        public string Title { get; } = source.Title;
+        public string AuthorNames { get; } = source.AuthorNames;
+        public IReadOnlyList<ReadingLogEdition> Editions { get; } = source.Editions;
+
+        public BookStatus Status { get; set; } = source.Status;
+        public DateTime? DateStarted { get; set; } = source.DateStarted;
+        public DateTime? DateRead { get; set; } = source.DateRead;
+        public double? MyRating { get; set; } = source.MyRating;
+        public int? ReadEditionId { get; set; } = source.ReadEditionId;
+        public RowSaveState SaveState { get; set; } = RowSaveState.None;
+    }
+
+    private List<RowState> _rows = [];
+    private bool _loading = true;
+
+    // Active sort levels in priority order; the first is primary, the rest are tie-breakers.
+    // Seeded to match the query's default (title ascending).
+    private readonly List<(ReadingLogColumn Col, bool Desc)> _sorts = [(ReadingLogColumn.Title, false)];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var rows = await LibraryQueryService.GetReadingLogAsync();
+        _rows = rows.Select(r => new RowState(r)).ToList();
+        ApplySort();
+        _loading = false;
+    }
+
+    /// <summary>Plain click sorts by the clicked column alone, toggling asc/desc if it's already
+    /// the sole sort. Ctrl-click keeps existing levels and cycles the clicked column through
+    /// asc → desc → off, so you can build a multi-column sort.</summary>
+    private void OnHeaderClick(ReadingLogColumn col, MouseEventArgs e)
+    {
+        var idx = _sorts.FindIndex(s => s.Col == col);
+
+        if (e.CtrlKey || e.MetaKey)
+        {
+            if (idx < 0)
+            {
+                _sorts.Add((col, false));
+            }
+            else if (!_sorts[idx].Desc)
+            {
+                _sorts[idx] = (col, true);
+            }
+            else
+            {
+                _sorts.RemoveAt(idx);
+            }
+        }
+        else if (idx >= 0 && _sorts.Count == 1)
+        {
+            _sorts[0] = (col, !_sorts[0].Desc);
+        }
+        else
+        {
+            _sorts.Clear();
+            _sorts.Add((col, false));
+        }
+
+        ApplySort();
+    }
+
+    private void ApplySort()
+    {
+        if (_sorts.Count == 0)
+        {
+            return;
+        }
+
+        // Reassign a fresh list so Virtualize re-renders the reordered rows.
+        var sorted = _rows.ToList();
+        sorted.Sort(CompareRows);
+        _rows = sorted;
+    }
+
+    private int CompareRows(RowState a, RowState b)
+    {
+        foreach (var (col, desc) in _sorts)
+        {
+            var c = CompareColumn(a, b, col);
+            if (c != 0)
+            {
+                return desc ? -c : c;
+            }
+        }
+
+        return 0;
+    }
+
+    private static int CompareColumn(RowState a, RowState b, ReadingLogColumn col) => col switch
+    {
+        ReadingLogColumn.Title => string.Compare(a.Title, b.Title, StringComparison.OrdinalIgnoreCase),
+        ReadingLogColumn.Author => string.Compare(a.AuthorNames, b.AuthorNames, StringComparison.OrdinalIgnoreCase),
+        ReadingLogColumn.Status => a.Status.CompareTo(b.Status),
+        ReadingLogColumn.Started => Nullable.Compare(a.DateStarted, b.DateStarted),
+        ReadingLogColumn.Finished => Nullable.Compare(a.DateRead, b.DateRead),
+        ReadingLogColumn.Rating => Nullable.Compare(a.MyRating, b.MyRating),
+        ReadingLogColumn.ReadEdition => string.Compare(ReadEditionLabel(a), ReadEditionLabel(b), StringComparison.OrdinalIgnoreCase),
+        _ => 0,
+    };
+
+    private static string ReadEditionLabel(RowState row)
+        => row.Editions.FirstOrDefault(e => e.Id == row.ReadEditionId)?.Label ?? string.Empty;
+
+    /// <summary>The arrow (and, when more than one level is active, the priority number) shown
+    /// next to a sortable header.</summary>
+    private MarkupString SortIndicator(ReadingLogColumn col)
+    {
+        var idx = _sorts.FindIndex(s => s.Col == col);
+        if (idx < 0)
+        {
+            return (MarkupString)string.Empty;
+        }
+
+        var arrow = _sorts[idx].Desc ? "▼" : "▲";
+        var rank = _sorts.Count > 1 ? $"<sup>{idx + 1}</sup>" : string.Empty;
+        return (MarkupString)$" {arrow}{rank}";
+    }
+
+    private async Task OnStatusChangedAsync(RowState row, ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<BookStatus>(e.Value?.ToString(), out var status))
+        {
+            return;
+        }
+
+        row.Status = status;
+        if (status == BookStatus.Reading && row.DateStarted is null)
+        {
+            row.DateStarted = DateTime.Today;
+        }
+        else if (status == BookStatus.Read && row.DateRead is null)
+        {
+            row.DateRead = DateTime.Today;
+        }
+
+        await SaveRowAsync(row);
+    }
+
+    private async Task OnDateStartedChangedAsync(RowState row, ChangeEventArgs e)
+    {
+        row.DateStarted = DateTime.TryParse(e.Value?.ToString(), out var d) ? d : null;
+        await SaveRowAsync(row);
+    }
+
+    private async Task OnDateReadChangedAsync(RowState row, ChangeEventArgs e)
+    {
+        row.DateRead = DateTime.TryParse(e.Value?.ToString(), out var d) ? d : null;
+        await SaveRowAsync(row);
+    }
+
+    /// <summary>Native &lt;input type="date"&gt; rejects free-form pasted text, so we intercept the
+    /// paste, read the clipboard via JS, parse it flexibly, and set the field ourselves.</summary>
+    private async Task OnDatePasteAsync(RowState row, bool isStarted)
+    {
+        string text;
+        try
+        {
+            text = await JS.InvokeAsync<string>("navigator.clipboard.readText");
+        }
+        catch
+        {
+            // Clipboard read blocked/unavailable — nothing we can do; leave the field as-is.
+            return;
+        }
+
+        if (!TryParseFlexibleDate(text, out var date))
+        {
+            return;
+        }
+
+        if (isStarted)
+        {
+            row.DateStarted = date;
+        }
+        else
+        {
+            row.DateRead = date;
+        }
+
+        await SaveRowAsync(row);
+    }
+
+    // US-style month-first formats first (matches "01/02/2023" → Jan 2), then ISO and common
+    // long forms. Swap the day/month order here if you'd rather "01/02/2023" mean 1 February.
+    private static readonly string[] DateFormats =
+    [
+        "M/d/yyyy", "MM/dd/yyyy", "M/d/yy", "MM/dd/yy",
+        "M-d-yyyy", "MM-dd-yyyy",
+        "yyyy-MM-dd", "yyyy/MM/dd",
+        "MMM d, yyyy", "MMMM d, yyyy", "d MMM yyyy", "d MMMM yyyy",
+    ];
+
+    private static bool TryParseFlexibleDate(string? text, out DateTime date)
+    {
+        date = default;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        text = text.Trim();
+        return DateTime.TryParseExact(text, DateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
+            || DateTime.TryParse(text, CultureInfo.GetCultureInfo("en-US"), DateTimeStyles.None, out date);
+    }
+
+    private async Task OnRatingChangedAsync(RowState row, double? value)
+    {
+        row.MyRating = value;
+        await SaveRowAsync(row);
+    }
+
+    private async Task OnReadEditionChangedAsync(RowState row, ChangeEventArgs e)
+    {
+        row.ReadEditionId = int.TryParse(e.Value?.ToString(), out var id) ? id : null;
+        await SaveRowAsync(row);
+    }
+
+    /// <summary>Persists the row's current values. Mirrors BookDetail's status editor: the
+    /// started/finished/rating/read-edition fields are only sent when the status makes them
+    /// meaningful, so demoting a book back to "Want to read" clears them.</summary>
+    private async Task SaveRowAsync(RowState row)
+    {
+        row.SaveState = RowSaveState.Saving;
+        StateHasChanged();
+
+        await LibraryWriteService.UpdateStatusAsync(
+            row.Id,
+            row.Status,
+            row.Status is BookStatus.Reading or BookStatus.Read ? row.DateStarted : null,
+            row.Status == BookStatus.Read ? row.DateRead : null,
+            row.Status == BookStatus.Read ? row.MyRating : null,
+            row.Status == BookStatus.Read ? row.ReadEditionId : null);
+
+        row.SaveState = RowSaveState.Saved;
+        StateHasChanged();
+    }
+}

@@ -453,6 +453,45 @@ a:hover {
     font-weight: 600;
 }
 
+/* Reading Log: compact inline editors (the shared .search-box min-width is far too
+   wide for date cells) and a header that stays put while the long list scrolls. */
+.reading-log-table th {
+    position: sticky;
+    top: 0;
+    background: var(--color-surface);
+    z-index: 1;
+}
+
+.reading-log-table .search-box,
+.reading-log-table .sort-select {
+    min-width: 0;
+    padding: 0.3rem 0.45rem;
+    font-size: 0.85rem;
+}
+
+.reading-log-table .search-box[type="date"] {
+    width: 9.5rem;
+}
+
+.reading-log-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.reading-log-table th.sortable:hover {
+    color: var(--color-text);
+}
+
+.reading-log-table th.sortable sup {
+    font-size: 0.7em;
+}
+
+.reading-log-save {
+    width: 6rem;
+    white-space: nowrap;
+}
+
 .status-editor {
     margin-top: 1.25rem;
     padding-top: 1rem;
