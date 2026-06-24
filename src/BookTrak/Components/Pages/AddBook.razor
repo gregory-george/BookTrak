@@ -1,4 +1,5 @@
 @page "/add/book"
+@using BookTrak.Audible.Models
 @using BookTrak.Services
 @inject ILibraryWriteService LibraryWriteService
 @inject NavigationManager Nav
@@ -71,6 +72,67 @@ else if (_results.Count > 0)
 }
 
 <h2 style="margin-top:2rem;">No match on Open Library?</h2>
+
+<p class="muted">Try the audiobook catalog — many titles Open Library doesn't carry are on Audible.</p>
+<div class="toolbar">
+    <button class="btn-primary" disabled="@(string.IsNullOrWhiteSpace(_searchText) || _searchingAudiobooks)" @onclick="SearchAudiobooksAsync">
+        @(_searchingAudiobooks ? "Searching audiobooks…" : "Search audiobooks instead")
+    </button>
+    @if (string.IsNullOrWhiteSpace(_searchText))
+    {
+        <span class="muted">Type a title and/or author above first.</span>
+    }
+</div>
+
+@if (_audiobookError is not null)
+{
+    <div class="empty-state"><p>@_audiobookError</p></div>
+}
+else if (_audiobookHits is { Count: 0 })
+{
+    <div class="empty-state"><p>No audiobooks match "@_searchText" — add the book manually below.</p></div>
+}
+else if (_audiobookHits is { Count: > 0 })
+{
+    <p class="muted">Pick the audiobook to add — it becomes a new book with this audiobook as its preferred edition.</p>
+    <table class="editions-table">
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Author(s)</th>
+                <th>Narrator(s)</th>
+                <th>Publisher</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var hit in _audiobookHits)
+            {
+                var c = hit.Candidate;
+                <tr>
+                    <td>@c.Title@(string.IsNullOrWhiteSpace(c.Subtitle) ? "" : $" — {c.Subtitle}")</td>
+                    <td>@(c.Authors.Count > 0 ? string.Join(", ", c.Authors) : "—")</td>
+                    <td>@(c.Narrators.Count > 0 ? string.Join(", ", c.Narrators) : "—")</td>
+                    <td>@(c.PublisherName ?? "—")</td>
+                    <td>
+                        @if (hit.AlreadyInLibrary)
+                        {
+                            <a href="@($"books/{hit.LocalBookId}")">Already in library</a>
+                        }
+                        else
+                        {
+                            <button class="btn-primary" disabled="@(_addingAudiobook == c.Asin)" @onclick="() => AddFromAudiobookAsync(c)">
+                                @(_addingAudiobook == c.Asin ? "Adding…" : "Add")
+                            </button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<h3 style="margin-top:2rem;">Still nothing?</h3>
 <p class="muted">Add the book manually — enrich it with editions later, or use Add by ISBN.</p>
 <div class="toolbar">
     <input class="search-box" type="text" placeholder="Book title" @bind="_manualTitle" @bind:event="oninput" />
@@ -88,6 +150,11 @@ else if (_results.Count > 0)
     private string? _adding;
     private string? _error;
     private CancellationTokenSource? _debounceCts;
+
+    private bool _searchingAudiobooks;
+    private IReadOnlyList<AudiobookSearchHit>? _audiobookHits;
+    private string? _audiobookError;
+    private string? _addingAudiobook;
 
     private enum SearchColumn { Title, Author, FirstPublished, Rating }
 
@@ -185,6 +252,10 @@ else if (_results.Count > 0)
         _searchText = e.Value?.ToString();
         _error = null;
 
+        // A new OL query invalidates any audiobook results shown for the previous one.
+        _audiobookHits = null;
+        _audiobookError = null;
+
         _debounceCts?.Cancel();
         _debounceCts?.Dispose();
         var cts = new CancellationTokenSource();
@@ -254,6 +325,46 @@ else if (_results.Count > 0)
         {
             _error = "Couldn't add that book — check your connection and try again.";
             _adding = null;
+        }
+    }
+
+    private async Task SearchAudiobooksAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_searchText))
+        {
+            return;
+        }
+
+        _searchingAudiobooks = true;
+        _audiobookError = null;
+        _audiobookHits = null;
+        StateHasChanged();
+
+        var result = await LibraryWriteService.SearchAudiobooksAsync(_searchText.Trim());
+        _audiobookHits = result.Hits;
+        _audiobookError = result.Error is not null
+            ? "Audible search is unavailable right now — add the book manually below."
+            : null;
+
+        _searchingAudiobooks = false;
+        StateHasChanged();
+    }
+
+    private async Task AddFromAudiobookAsync(AudiobookCandidate candidate)
+    {
+        _addingAudiobook = candidate.Asin;
+        _audiobookError = null;
+        StateHasChanged();
+
+        try
+        {
+            var added = await LibraryWriteService.AddBookFromAudiobookAsync(candidate.Asin);
+            Nav.NavigateTo($"books/{added.BookId}");
+        }
+        catch (Exception)
+        {
+            _audiobookError = "Couldn't add that audiobook — audnexus may be unavailable. Try another match or add the book manually.";
+            _addingAudiobook = null;
         }
     }
 

@@ -51,6 +51,14 @@ public sealed record AddEditionResult(bool Success, int? EditionId, string? Erro
 /// optional user-facing error when Audible's search was unavailable.</summary>
 public sealed record AudiobookSearchResult(IReadOnlyList<AudiobookCandidate> Candidates, string? Error);
 
+/// <summary>A free-text audiobook search hit, paired with whether its ASIN is already attached to
+/// a local book (so the UI can link to it instead of offering to add a duplicate).</summary>
+public sealed record AudiobookSearchHit(AudiobookCandidate Candidate, bool AlreadyInLibrary, int? LocalBookId);
+
+/// <summary>Result of a free-text audiobook search used by the Add Book fallback: the hits, plus an
+/// optional user-facing error when Audible's search was unavailable.</summary>
+public sealed record AudiobookSearchHitsResult(IReadOnlyList<AudiobookSearchHit> Hits, string? Error);
+
 /// <summary>Re-sync staleness policy. No specific threshold is mandated by the spec — 30 days is
 /// a reasonable default for a personal, session-bounded app.</summary>
 public static class SyncStatus
@@ -77,6 +85,19 @@ public interface ILibraryWriteService
     Task<AddBookResult> AddBookFromOpenLibraryAsync(string openLibraryWorkId, CancellationToken cancellationToken = default);
 
     Task<AddBookResult> AddManualBookAsync(string title, CancellationToken cancellationToken = default);
+
+    /// <summary>Free-text audiobook search against Audible's catalog (discovery only — see
+    /// CLAUDE.md), used as the Add Book fallback when Open Library has no matching work. Flags any
+    /// hit whose ASIN is already attached to a local book. Returns an Error string (and empty hits)
+    /// when Audible's search is unavailable rather than throwing.</summary>
+    Task<AudiobookSearchHitsResult> SearchAudiobooksAsync(string query, CancellationToken cancellationToken = default);
+
+    /// <summary>Creates a new Book from an audnexus audiobook (by ASIN) and attaches it as the
+    /// preferred Audiobook edition — the Add Book fallback for works Open Library doesn't carry.
+    /// Authors come from audnexus by name (no OL id) and are deduped against existing authors by
+    /// case-insensitive name. If the ASIN is already attached to a book, returns that book instead
+    /// of duplicating.</summary>
+    Task<AddBookResult> AddBookFromAudiobookAsync(string asin, CancellationToken cancellationToken = default);
 
     /// <summary>Resolves an ISBN via Open Library's /isbn endpoint and creates (or attaches to) a
     /// Book. Returns null if Open Library has no edition for that ISBN — caller should fall back
@@ -283,6 +304,116 @@ internal sealed class LibraryWriteService(
 
         var book = new Book { Title = title, DateAdded = DateTime.UtcNow };
         context.Books.Add(book);
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        return new AddBookResult(book.Id, false);
+    }
+
+    public async Task<AudiobookSearchHitsResult> SearchAudiobooksAsync(string query, CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<AudiobookCandidate> candidates;
+        try
+        {
+            // Audible's catalog search is keyword-based; passing the whole query as the title (with
+            // no separate author) is exactly what a free-text "title and/or author" box wants.
+            candidates = await audiobookSearchProvider.SearchAsync(query, string.Empty, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (AudibleUnavailableException ex)
+        {
+            return new AudiobookSearchHitsResult([], ex.Message);
+        }
+
+        if (candidates.Count == 0)
+        {
+            return new AudiobookSearchHitsResult([], null);
+        }
+
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var asins = candidates.Select(c => c.Asin).ToList();
+        var byAsin = await context.Editions
+            .Where(e => e.Asin != null && asins.Contains(e.Asin))
+            .Select(e => new { Asin = e.Asin!, e.BookId })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var bookIdByAsin = byAsin
+            .GroupBy(e => e.Asin)
+            .ToDictionary(g => g.Key, g => g.First().BookId);
+
+        var hits = candidates.Select(c =>
+        {
+            var localId = bookIdByAsin.TryGetValue(c.Asin, out var id) ? id : (int?)null;
+            return new AudiobookSearchHit(c, localId is not null, localId);
+        }).ToList();
+
+        return new AudiobookSearchHitsResult(hits, null);
+    }
+
+    public async Task<AddBookResult> AddBookFromAudiobookAsync(string asin, CancellationToken cancellationToken = default)
+    {
+        asin = asin.Trim();
+
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Dedup: if any edition already carries this ASIN, the book exists — return it untouched.
+        var existingEdition = await context.Editions.FirstOrDefaultAsync(e => e.Asin == asin, cancellationToken).ConfigureAwait(false);
+        if (existingEdition is not null)
+        {
+            return new AddBookResult(existingEdition.BookId, true);
+        }
+
+        NormalizedAudiobook? normalized;
+        try
+        {
+            normalized = await audiobookMetadataProvider.GetByAsinAsync(asin, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AudnexusUnavailableException ex)
+        {
+            throw new InvalidOperationException($"audnexus is unavailable — couldn't fetch audiobook '{asin}'.", ex);
+        }
+
+        if (normalized is null)
+        {
+            throw new InvalidOperationException($"audnexus has no audiobook for ASIN '{asin}'.");
+        }
+
+        var coverPath = !string.IsNullOrWhiteSpace(normalized.ImageUrl)
+            ? ToRelativePath(await coverCache.GetExternalCoverPathAsync(normalized.ImageUrl, $"asin-{asin}", cancellationToken).ConfigureAwait(false))
+            : null;
+
+        // No OpenLibraryWorkId — this is a local book sourced from audnexus, not refreshable via OL.
+        var book = new Book
+        {
+            Title = normalized.Title,
+            Subtitle = normalized.Subtitle,
+            Description = normalized.Summary,
+            DateAdded = DateTime.UtcNow,
+        };
+        context.Books.Add(book);
+
+        foreach (var authorName in normalized.Authors)
+        {
+            if (string.IsNullOrWhiteSpace(authorName))
+            {
+                continue;
+            }
+
+            var author = await GetOrCreateAuthorByNameAsync(context, authorName, cancellationToken).ConfigureAwait(false);
+            book.BookAuthors.Add(new BookAuthor { Book = book, Author = author });
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalized.SeriesName))
+        {
+            book.Series = await GetOrCreateSeriesAsync(context, normalized.SeriesName, cancellationToken).ConfigureAwait(false);
+            book.SeriesPosition = normalized.SeriesPosition;
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        var edition = BuildAudiobookEdition(normalized, book.Id, asin, coverPath);
+        context.Editions.Add(edition);
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        book.PreferredEditionId = edition.Id;
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         return new AddBookResult(book.Id, false);
@@ -690,19 +821,7 @@ internal sealed class LibraryWriteService(
             ? ToRelativePath(await coverCache.GetExternalCoverPathAsync(normalized.ImageUrl, $"asin-{asin}", cancellationToken).ConfigureAwait(false))
             : null;
 
-        var edition = new Edition
-        {
-            BookId = bookId,
-            Format = EditionFormat.Audiobook,
-            Asin = asin,
-            Language = normalized.Language,
-            Publisher = normalized.PublisherName,
-            PublishDate = normalized.ReleaseDate,
-            Narrator = normalized.Narrators.Count > 0 ? string.Join(", ", normalized.Narrators) : null,
-            DurationSeconds = normalized.RuntimeLengthMinutes is { } minutes ? minutes * 60 : null,
-            AudioPublisher = normalized.PublisherName,
-            CoverPath = coverPath,
-        };
+        var edition = BuildAudiobookEdition(normalized, bookId, asin, coverPath);
         context.Editions.Add(edition);
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
@@ -813,6 +932,39 @@ internal sealed class LibraryWriteService(
         }
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds an Audiobook Edition from an audnexus result. Shared by the
+    /// attach-to-existing-book and create-book-from-audiobook flows.</summary>
+    private static Edition BuildAudiobookEdition(NormalizedAudiobook normalized, int bookId, string asin, string? coverPath) => new()
+    {
+        BookId = bookId,
+        Format = EditionFormat.Audiobook,
+        Asin = asin,
+        Language = normalized.Language,
+        Publisher = normalized.PublisherName,
+        PublishDate = normalized.ReleaseDate,
+        Narrator = normalized.Narrators.Count > 0 ? string.Join(", ", normalized.Narrators) : null,
+        DurationSeconds = normalized.RuntimeLengthMinutes is { } minutes ? minutes * 60 : null,
+        AudioPublisher = normalized.PublisherName,
+        CoverPath = coverPath,
+    };
+
+    /// <summary>Dedups audnexus authors (which have no OL id) against existing rows by
+    /// case-insensitive name, so a name BookTrak already knows — whether added from OL or another
+    /// audiobook — links instead of creating a duplicate. New names become manual Author rows.</summary>
+    private static async Task<Author> GetOrCreateAuthorByNameAsync(BookTrakContext context, string name, CancellationToken cancellationToken)
+    {
+        var trimmed = name.Trim();
+        var existing = await context.Authors.FirstOrDefaultAsync(a => a.Name.ToLower() == trimmed.ToLower(), cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var author = new Author { Name = trimmed, DateAdded = DateTime.UtcNow };
+        context.Authors.Add(author);
+        return author;
     }
 
     /// <summary>Open Library's own series data is too patchy to key off (per spec) — series are
