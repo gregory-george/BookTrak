@@ -5,7 +5,8 @@ namespace BookTrak.Data;
 
 /// <summary>
 /// Startup sequence: back up the existing DB (+ config.json) BEFORE migrating, then migrate,
-/// then prune old backups. Backing up first means a bad migration never destroys the only copy.
+/// then prune old backups. At most one backup is created per calendar day. Backing up first means
+/// a bad migration never destroys the only copy.
 /// </summary>
 internal static class DatabaseStartup
 {
@@ -19,9 +20,10 @@ internal static class DatabaseStartup
         context.Database.Migrate();
     }
 
-    /// <summary>Copies BookTrak.db (+ config.json) to backups/ with a yyyyMMddTHHmmss suffix and
-    /// prunes anything past the last 10. Shared by the startup backup-then-migrate sequence and
-    /// the manual "Back up now" settings-page button. Returns false if there's no database yet.</summary>
+    /// <summary>Copies BookTrak.db (+ config.json) to backups/ with a yyyyMMdd suffix and prunes
+    /// anything past the last 10. At most one backup is created per calendar day. Shared by the
+    /// startup backup-then-migrate sequence and the manual "Back up now" settings-page button.
+    /// Returns false if there's no database yet or today's backup already exists.</summary>
     public static bool CreateBackup()
     {
         if (!File.Exists(AppPaths.DatabaseFile))
@@ -30,13 +32,19 @@ internal static class DatabaseStartup
         }
 
         Directory.CreateDirectory(AppPaths.BackupsDirectory);
-        var timestamp = DateTime.UtcNow.ToString("yyyyMMddTHHmmss");
+        var datestamp = DateTime.UtcNow.ToString("yyyyMMdd");
 
-        File.Copy(AppPaths.DatabaseFile, Path.Combine(AppPaths.BackupsDirectory, $"BookTrak_{timestamp}.db"), overwrite: false);
+        var dbDest = Path.Combine(AppPaths.BackupsDirectory, $"BookTrak_{datestamp}.db");
+        if (File.Exists(dbDest))
+        {
+            return false; // already backed up today
+        }
+
+        File.Copy(AppPaths.DatabaseFile, dbDest, overwrite: false);
 
         if (File.Exists(AppPaths.ConfigFile))
         {
-            File.Copy(AppPaths.ConfigFile, Path.Combine(AppPaths.BackupsDirectory, $"config_{timestamp}.json"), overwrite: false);
+            File.Copy(AppPaths.ConfigFile, Path.Combine(AppPaths.BackupsDirectory, $"config_{datestamp}.json"), overwrite: false);
         }
 
         PruneBackups();
