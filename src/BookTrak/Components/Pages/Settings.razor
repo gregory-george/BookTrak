@@ -1,6 +1,7 @@
 @page "/settings"
 @using BookTrak.Hosting
 @using BookTrak.Services
+@using System.Reflection
 @inject IMaintenanceService MaintenanceService
 
 <PageTitle>Settings — BookTrak</PageTitle>
@@ -12,6 +13,7 @@
 <div class="status-editor" style="margin-top:0;">
     <h2 style="margin-top:0;">About this install</h2>
     <div class="book-detail-meta">
+        <span>Version: @_version</span>
         <span>Port: @_config.Port</span>
         <span>Schema version: @_config.SchemaVersion</span>
         <span>Data folder: @AppPaths.RootDirectory</span>
@@ -44,6 +46,7 @@
 
 @code {
     private AppConfig _config = AppConfig.LoadOrCreate();
+    private string _version = typeof(Settings).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
     private bool _backingUp;
     private string? _backupMessage;
     private bool _cleaningUp;
