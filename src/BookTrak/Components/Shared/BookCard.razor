@@ -1,7 +1,17 @@
 @using BookTrak.Services
+@inject ILibraryWriteService LibraryWriteService
+@inject IJSRuntime JS
 
 <a class="book-card" href="@($"books/{Book.Id}")">
     <div class="book-card-cover">
+        @if (OnDeleted.HasDelegate)
+        {
+            <button type="button" class="book-card-delete" title="Delete book"
+                    disabled="@_deleting"
+                    @onclick="DeleteAsync" @onclick:preventDefault="true" @onclick:stopPropagation="true">
+                ✕
+            </button>
+        }
         @if (Book.CoverWebPath is not null)
         {
             <img src="@Book.CoverWebPath" alt="@Book.Title cover" loading="lazy" />
@@ -44,4 +54,30 @@
 @code {
     [Parameter, EditorRequired]
     public LibraryBookSummary Book { get; set; } = null!;
+
+    /// <summary>When set, a delete button is shown on the card; the callback fires after the book
+    /// (and all its editions) has been deleted so the parent can refresh its list.</summary>
+    [Parameter]
+    public EventCallback OnDeleted { get; set; }
+
+    private bool _deleting;
+
+    private async Task DeleteAsync()
+    {
+        if (_deleting)
+        {
+            return;
+        }
+
+        var confirmed = await JS.InvokeAsync<bool>("confirm",
+            $"Delete “{Book.Title}” and all of its editions? This can't be undone.");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        _deleting = true;
+        await LibraryWriteService.DeleteBookAsync(Book.Id);
+        await OnDeleted.InvokeAsync();
+    }
 }

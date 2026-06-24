@@ -138,7 +138,7 @@ else
             <div class="book-grid book-row">
                 @foreach (var book in row)
                 {
-                    <BookCard Book="book" />
+                    <BookCard Book="book" OnDeleted="LoadAsync" />
                 }
             </div>
         </Virtualize>

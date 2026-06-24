@@ -112,6 +112,13 @@ public interface ILibraryWriteService
     /// <summary>Toggles Book.IsIgnored (work-level hide).</summary>
     Task SetBookIgnoredAsync(int bookId, bool isIgnored, CancellationToken cancellationToken = default);
 
+    /// <summary>Permanently deletes a Book and everything that hangs off it — its Editions,
+    /// BookAuthor/BookGenre join rows, and FTS search entry all cascade. The Preferred/Read
+    /// edition pointers are nulled first to break the Book↔Edition reference cycle (those FKs are
+    /// Restrict). Orphaned cover files are reclaimed by the next OrphanCoverCleanup sweep. No-op if
+    /// the book doesn't exist. Authors and Series are shared and left intact.</summary>
+    Task DeleteBookAsync(int bookId, CancellationToken cancellationToken = default);
+
     /// <summary>Toggles Edition.IsIgnored. If the edition being ignored is the book's preferred
     /// edition, repoints to the best remaining non-ignored edition (same scoring as add-time
     /// auto-pick), or null if none remain.</summary>
@@ -604,6 +611,28 @@ internal sealed class LibraryWriteService(
             ?? throw new InvalidOperationException($"Book {bookId} not found.");
 
         book.IsIgnored = isIgnored;
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteBookAsync(int bookId, CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var book = await context.Books.FirstOrDefaultAsync(b => b.Id == bookId, cancellationToken).ConfigureAwait(false);
+        if (book is null)
+        {
+            return;
+        }
+
+        // Break the Book<->Edition reference cycle first: PreferredEditionId/ReadEditionId are
+        // Restrict FKs, so the cascade delete of Editions throws unless they're nulled out. Once
+        // the Book is removed, its Editions, BookAuthors, and BookGenres cascade (and the FTS
+        // AfterDelete trigger drops the search row). Cover files become orphans the next sweep clears.
+        book.PreferredEditionId = null;
+        book.ReadEditionId = null;
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        context.Books.Remove(book);
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
