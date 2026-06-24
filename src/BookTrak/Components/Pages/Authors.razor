@@ -1,4 +1,5 @@
 @page "/authors"
+@using BookTrak.Hosting
 @using BookTrak.Services
 @inject ILibraryQueryService LibraryQueryService
 @implements IDisposable
@@ -63,10 +64,15 @@ else
 @code {
     private IReadOnlyList<AuthorSummary>? _authors;
     private string? _searchText;
+    private readonly AppConfig _config = AppConfig.LoadOrCreate();
     private AuthorSortOrder _sort = AuthorSortOrder.FirstNameAsc;
     private CancellationTokenSource? _debounceCts;
 
-    protected override async Task OnInitializedAsync() => await LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        _sort = _config.AuthorSort;
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
@@ -106,6 +112,8 @@ else
         if (Enum.TryParse<AuthorSortOrder>(e.Value?.ToString(), out var sort))
         {
             _sort = sort;
+            _config.AuthorSort = sort;
+            _config.Save();
             await LoadAsync();
         }
     }

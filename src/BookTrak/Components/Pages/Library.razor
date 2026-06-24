@@ -1,5 +1,6 @@
 @page "/"
 @using BookTrak.Data.Entities
+@using BookTrak.Hosting
 @using BookTrak.Services
 @inject ILibraryQueryService LibraryQueryService
 @implements IDisposable
@@ -150,6 +151,7 @@ else
     private List<LibraryBookSummary[]> _rows = [];
     private Virtualize<LibraryBookSummary[]>? _virtualizeRef;
     private string? _searchText;
+    private readonly AppConfig _config = AppConfig.LoadOrCreate();
     private LibrarySortOrder _sort = LibrarySortOrder.DateAddedDesc;
     private bool _includeIgnored;
     private bool _loading = true;
@@ -166,7 +168,11 @@ else
 
     private int ActiveFacetCount => _selectedStatuses.Count + _selectedFormats.Count + _selectedGenreIds.Count + _selectedSeriesIds.Count + _selectedRatingBuckets.Count;
 
-    protected override async Task OnInitializedAsync() => await LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        _sort = _config.LibrarySort;
+        await LoadAsync();
+    }
 
     private LibraryQuery BuildQuery() => new(
         _searchText,
@@ -227,6 +233,8 @@ else
         if (Enum.TryParse<LibrarySortOrder>(e.Value?.ToString(), out var sort))
         {
             _sort = sort;
+            _config.LibrarySort = sort;
+            _config.Save();
             await LoadAsync();
         }
     }
