@@ -33,13 +33,14 @@ else if (!string.IsNullOrWhiteSpace(_searchText) && _results.Count == 0)
 }
 else if (_results.Count > 0)
 {
+    <p class="muted">Click a column to sort, Ctrl-click to add a level.</p>
     <table class="editions-table">
         <thead>
             <tr>
-                <th>Title</th>
-                <th>Author(s)</th>
-                <th>First published</th>
-                <th>Rating</th>
+                <th class="sortable" @onclick="e => OnHeaderClick(SearchColumn.Title, e)">Title@(SortIndicator(SearchColumn.Title))</th>
+                <th class="sortable" @onclick="e => OnHeaderClick(SearchColumn.Author, e)">Author(s)@(SortIndicator(SearchColumn.Author))</th>
+                <th class="sortable" @onclick="e => OnHeaderClick(SearchColumn.FirstPublished, e)">First published@(SortIndicator(SearchColumn.FirstPublished))</th>
+                <th class="sortable" @onclick="e => OnHeaderClick(SearchColumn.Rating, e)">Rating@(SortIndicator(SearchColumn.Rating))</th>
                 <th></th>
             </tr>
         </thead>
@@ -88,6 +89,97 @@ else if (_results.Count > 0)
     private string? _error;
     private CancellationTokenSource? _debounceCts;
 
+    private enum SearchColumn { Title, Author, FirstPublished, Rating }
+
+    // Active sort levels in priority order; the first is primary, the rest are tie-breakers.
+    // Empty by default so results keep Open Library's relevance order until the user sorts.
+    private readonly List<(SearchColumn Col, bool Desc)> _sorts = [];
+
+    /// <summary>Plain click sorts by the clicked column alone, toggling asc/desc if it's already
+    /// the sole sort. Ctrl-click keeps existing levels and cycles the clicked column through
+    /// asc → desc → off, so you can build a multi-column sort.</summary>
+    private void OnHeaderClick(SearchColumn col, MouseEventArgs e)
+    {
+        var idx = _sorts.FindIndex(s => s.Col == col);
+
+        if (e.CtrlKey || e.MetaKey)
+        {
+            if (idx < 0)
+            {
+                _sorts.Add((col, false));
+            }
+            else if (!_sorts[idx].Desc)
+            {
+                _sorts[idx] = (col, true);
+            }
+            else
+            {
+                _sorts.RemoveAt(idx);
+            }
+        }
+        else if (idx >= 0 && _sorts.Count == 1)
+        {
+            _sorts[0] = (col, !_sorts[0].Desc);
+        }
+        else
+        {
+            _sorts.Clear();
+            _sorts.Add((col, false));
+        }
+
+        ApplySort();
+    }
+
+    private void ApplySort()
+    {
+        if (_sorts.Count == 0)
+        {
+            return;
+        }
+
+        var sorted = _results.ToList();
+        sorted.Sort(CompareRows);
+        _results = sorted;
+    }
+
+    private int CompareRows(WorkSearchResult a, WorkSearchResult b)
+    {
+        foreach (var (col, desc) in _sorts)
+        {
+            var c = CompareColumn(a, b, col);
+            if (c != 0)
+            {
+                return desc ? -c : c;
+            }
+        }
+
+        return 0;
+    }
+
+    private static int CompareColumn(WorkSearchResult a, WorkSearchResult b, SearchColumn col) => col switch
+    {
+        SearchColumn.Title => string.Compare(a.Title, b.Title, StringComparison.OrdinalIgnoreCase),
+        SearchColumn.Author => string.Compare(a.AuthorNames, b.AuthorNames, StringComparison.OrdinalIgnoreCase),
+        SearchColumn.FirstPublished => Nullable.Compare(a.FirstPublishYear, b.FirstPublishYear),
+        SearchColumn.Rating => Nullable.Compare(a.RatingsAverage, b.RatingsAverage),
+        _ => 0,
+    };
+
+    /// <summary>The arrow (and, when more than one level is active, the priority number) shown
+    /// next to a sortable header.</summary>
+    private MarkupString SortIndicator(SearchColumn col)
+    {
+        var idx = _sorts.FindIndex(s => s.Col == col);
+        if (idx < 0)
+        {
+            return (MarkupString)string.Empty;
+        }
+
+        var arrow = _sorts[idx].Desc ? "▼" : "▲";
+        var rank = _sorts.Count > 1 ? $"<sup>{idx + 1}</sup>" : string.Empty;
+        return (MarkupString)$" {arrow}{rank}";
+    }
+
     private void OnSearchInput(ChangeEventArgs e)
     {
         _searchText = e.Value?.ToString();
@@ -123,6 +215,7 @@ else if (_results.Count > 0)
             try
             {
                 _results = (await LibraryWriteService.SearchWorksAsync(_searchText, token)).ToList();
+                ApplySort();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
