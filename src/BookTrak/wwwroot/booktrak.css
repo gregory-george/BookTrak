@@ -247,6 +247,16 @@ a:hover {
     gap: 0.5rem;
 }
 
+.book-card-description {
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
 .book-card-footer {
     margin-top: auto;
     display: flex;

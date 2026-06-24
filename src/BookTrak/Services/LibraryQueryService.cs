@@ -66,7 +66,8 @@ public sealed record LibraryBookSummary(
     DateTime DateAdded,
     string? PublishDate,
     int? EarliestPublishYear,
-    int EditionCount);
+    int EditionCount,
+    string? Description);
 
 public sealed record AuthorQuery(string? SearchText = null, AuthorSortOrder Sort = AuthorSortOrder.FirstNameAsc);
 
@@ -513,7 +514,8 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
             b.DateAdded,
             b.PreferredEdition?.PublishDate,
             earliestYear,
-            visibleEditions.Count);
+            visibleEditions.Count,
+            b.Description);
     }
 
     private static string? ToWebPath(string? coverPath) => CoverPaths.ToWebPath(coverPath);

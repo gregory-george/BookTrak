@@ -30,6 +30,10 @@
                 }
             </div>
         }
+        @if (!string.IsNullOrWhiteSpace(Book.Description))
+        {
+            <div class="book-card-description">@Book.Description</div>
+        }
         <div class="book-card-footer">
             <StarRating Value="@(Book.MyRating ?? Book.AverageRating)" />
             <StatusBadge Status="Book.Status" />
