@@ -24,7 +24,7 @@ else if (_result is { Works.Count: 0 })
 }
 else if (_result is not null)
 {
-    <p class="muted">@_result.Works.Count book@(_result.Works.Count == 1 ? "" : "s") not yet in your library.</p>
+    <p class="muted">@_result.Works.Count book@(_result.Works.Count == 1 ? "" : "s") not yet in your library · click a column to sort, Ctrl-click to add a level</p>
 
     <div>
         @if (RemainingCount > 0)
@@ -39,13 +39,13 @@ else if (_result is not null)
         <thead>
             <tr>
                 <th></th>
-                <th>Title</th>
-                <th>First published</th>
+                <th class="sortable" @onclick="e => OnHeaderClick(FindNewColumn.Title, e)">Title@(SortIndicator(FindNewColumn.Title))</th>
+                <th class="sortable" @onclick="e => OnHeaderClick(FindNewColumn.FirstPublished, e)">First published@(SortIndicator(FindNewColumn.FirstPublished))</th>
                 <th></th>
             </tr>
         </thead>
         <tbody>
-            @foreach (var work in _result.Works)
+            @foreach (var work in _works)
             {
                 <tr>
                     <td style="width:48px;">
@@ -78,7 +78,14 @@ else if (_result is not null)
     [Parameter]
     public int AuthorId { get; set; }
 
+    private enum FindNewColumn { Title, FirstPublished }
+
     private GapListResult? _result;
+    private List<GapListWork> _works = [];
+
+    // Active sort levels in priority order; the first is primary, the rest are tie-breakers.
+    // Seeded to match the query's default (title ascending).
+    private readonly List<(FindNewColumn Col, bool Desc)> _sorts = [(FindNewColumn.Title, false)];
     private bool _loading = true;
     private string? _error;
     private string? _adding;
@@ -94,6 +101,8 @@ else if (_result is not null)
         try
         {
             _result = await LibraryWriteService.GetGapListAsync(AuthorId);
+            _works = _result.Works.ToList();
+            ApplySort();
         }
         catch (Exception)
         {
@@ -101,6 +110,92 @@ else if (_result is not null)
         }
 
         _loading = false;
+    }
+
+    /// <summary>Plain click sorts by the clicked column alone, toggling asc/desc if it's already
+    /// the sole sort. Ctrl-click keeps existing levels and cycles the clicked column through
+    /// asc → desc → off, so you can build a multi-column sort.</summary>
+    private void OnHeaderClick(FindNewColumn col, MouseEventArgs e)
+    {
+        var idx = _sorts.FindIndex(s => s.Col == col);
+
+        if (e.CtrlKey || e.MetaKey)
+        {
+            if (idx < 0)
+            {
+                _sorts.Add((col, false));
+            }
+            else if (!_sorts[idx].Desc)
+            {
+                _sorts[idx] = (col, true);
+            }
+            else
+            {
+                _sorts.RemoveAt(idx);
+            }
+        }
+        else if (idx >= 0 && _sorts.Count == 1)
+        {
+            _sorts[0] = (col, !_sorts[0].Desc);
+        }
+        else
+        {
+            _sorts.Clear();
+            _sorts.Add((col, false));
+        }
+
+        ApplySort();
+    }
+
+    private void ApplySort()
+    {
+        if (_sorts.Count == 0)
+        {
+            return;
+        }
+
+        var sorted = _works.ToList();
+        sorted.Sort(CompareRows);
+        _works = sorted;
+    }
+
+    private int CompareRows(GapListWork a, GapListWork b)
+    {
+        foreach (var (col, desc) in _sorts)
+        {
+            var c = CompareColumn(a, b, col);
+            if (c != 0)
+            {
+                return desc ? -c : c;
+            }
+        }
+
+        return 0;
+    }
+
+    // FirstPublishDate is free text from Open Library (never parsed as a date), so it sorts as a
+    // string — nulls sort last so dated works lead.
+    private static int CompareColumn(GapListWork a, GapListWork b, FindNewColumn col) => col switch
+    {
+        FindNewColumn.Title => string.Compare(a.Title, b.Title, StringComparison.OrdinalIgnoreCase),
+        FindNewColumn.FirstPublished => string.Compare(
+            a.FirstPublishDate ?? "￿", b.FirstPublishDate ?? "￿", StringComparison.OrdinalIgnoreCase),
+        _ => 0,
+    };
+
+    /// <summary>The arrow (and, when more than one level is active, the priority number) shown
+    /// next to a sortable header.</summary>
+    private MarkupString SortIndicator(FindNewColumn col)
+    {
+        var idx = _sorts.FindIndex(s => s.Col == col);
+        if (idx < 0)
+        {
+            return (MarkupString)string.Empty;
+        }
+
+        var arrow = _sorts[idx].Desc ? "▼" : "▲";
+        var rank = _sorts.Count > 1 ? $"<sup>{idx + 1}</sup>" : string.Empty;
+        return (MarkupString)$" {arrow}{rank}";
     }
 
     private async Task AddAsync(GapListWork work)
