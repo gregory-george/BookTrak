@@ -4,6 +4,8 @@
 @using BookTrak.Services
 @inject ILibraryQueryService LibraryQueryService
 @inject ILibraryWriteService LibraryWriteService
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
 
 <PageTitle>@(_result?.Book.Title ?? "Book") — BookTrak</PageTitle>
 
@@ -138,6 +140,10 @@ else
 
                     <button class="btn-primary" @onclick="ToggleBookIgnoredAsync">
                         @(book.IsIgnored ? "Un-ignore" : "Ignore")
+                    </button>
+
+                    <button class="btn-danger" disabled="@_deleting" @onclick="DeleteBookAsync">
+                        @(_deleting ? "Deleting…" : "Delete")
                     </button>
                 </div>
                 @if (_statusMessage is not null)
@@ -526,6 +532,29 @@ else
 
         await LibraryWriteService.SetBookIgnoredAsync(BookId, !_result.Book.IsIgnored);
         await LoadAsync();
+    }
+
+    private bool _deleting;
+
+    private async Task DeleteBookAsync()
+    {
+        if (_deleting || _result is null)
+        {
+            return;
+        }
+
+        var confirmed = await JS.InvokeAsync<bool>("confirm",
+            $"Delete “{_result.Book.Title}” and all of its editions? This can't be undone.");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        _deleting = true;
+        StateHasChanged();
+
+        await LibraryWriteService.DeleteBookAsync(BookId);
+        Navigation.NavigateTo("/");
     }
 
     private async Task ToggleEditionIgnoredAsync(int editionId)

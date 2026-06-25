@@ -158,6 +158,27 @@ a:hover {
     cursor: default;
 }
 
+.btn-danger {
+    padding: 0.45rem 0.9rem;
+    border: none;
+    border-radius: var(--radius);
+    background: var(--color-danger, #c0392b);
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-danger:hover:not(:disabled) {
+    filter: brightness(0.9);
+}
+
+.btn-danger:disabled {
+    background: var(--color-border);
+    color: var(--color-text-muted);
+    cursor: default;
+}
+
 .empty-state {
     padding: 3rem 1rem;
     text-align: center;

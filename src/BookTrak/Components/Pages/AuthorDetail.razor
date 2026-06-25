@@ -88,7 +88,7 @@ else
         <div class="book-grid">
             @foreach (var book in _result.Books)
             {
-                <BookCard Book="book" />
+                <BookCard Book="book" OnDeleted="LoadAsync" />
             }
         </div>
     }
