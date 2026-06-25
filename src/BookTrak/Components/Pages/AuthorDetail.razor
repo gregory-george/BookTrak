@@ -69,7 +69,7 @@ else
     </div>
 
     <div class="page-header" style="margin-top:2rem;">
-        <h2 style="margin:0;">Books (@_result.Books.Count)</h2>
+        <h2 style="margin:0;">Books (@_result.BookCount)</h2>
         <div class="toolbar">
             <label class="muted">
                 <input type="checkbox" checked="@_includeIgnored" @onchange="OnIncludeIgnoredChanged" />
@@ -79,18 +79,32 @@ else
         </div>
     </div>
 
-    @if (_result.Books.Count == 0)
+    @if (_result.BookCount == 0)
     {
         <div class="empty-state"><p>No books for this author yet.</p></div>
     }
     else
     {
-        <div class="book-grid">
-            @foreach (var book in _result.Books)
-            {
-                <BookCard Book="book" OnDeleted="LoadAsync" />
-            }
-        </div>
+        @foreach (var group in _result.Groups)
+        {
+            <h3 class="series-group-heading">
+                @if (group.SeriesId is { } seriesId)
+                {
+                    <a href="@($"series/{seriesId}")">@group.Name</a>
+                }
+                else
+                {
+                    @group.Name
+                }
+                <span class="muted">(@group.Books.Count)</span>
+            </h3>
+            <div class="book-grid">
+                @foreach (var book in group.Books)
+                {
+                    <BookCard Book="book" OnDeleted="LoadAsync" />
+                }
+            </div>
+        }
     }
 }
 

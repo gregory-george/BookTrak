@@ -67,13 +67,20 @@ public sealed record LibraryBookSummary(
     string? PublishDate,
     int? EarliestPublishYear,
     int EditionCount,
-    string? Description);
+    string? Description,
+    int? SeriesId = null,
+    string? SeriesName = null,
+    string? SeriesPosition = null);
 
 public sealed record AuthorQuery(string? SearchText = null, AuthorSortOrder Sort = AuthorSortOrder.FirstNameAsc);
 
 public sealed record AuthorSummary(int Id, string Name, string? PhotoWebPath, int BookCount);
 
-public sealed record AuthorDetailResult(Author Author, IReadOnlyList<LibraryBookSummary> Books);
+public sealed record AuthorDetailResult(Author Author, IReadOnlyList<AuthorBookGroup> Groups, int BookCount);
+
+/// <summary>Books on the author page grouped by series; ungrouped books fall into a single
+/// "Standalone" group (SeriesId null). Series groups are ordered by name with Standalone last.</summary>
+public sealed record AuthorBookGroup(string Name, int? SeriesId, IReadOnlyList<LibraryBookSummary> Books);
 
 public sealed record BookDetailResult(Book Book, IReadOnlyList<Author> Authors, IReadOnlyList<Edition> Editions);
 
@@ -306,6 +313,7 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
         var author = await context.Authors
             .Include(a => a.BookAuthors).ThenInclude(ba => ba.Book).ThenInclude(b => b.PreferredEdition)
             .Include(a => a.BookAuthors).ThenInclude(ba => ba.Book).ThenInclude(b => b.Editions)
+            .Include(a => a.BookAuthors).ThenInclude(ba => ba.Book).ThenInclude(b => b.Series)
             .Include(a => a.BookAuthors).ThenInclude(ba => ba.Book).ThenInclude(b => b.BookAuthors).ThenInclude(ba => ba.Author)
             .FirstOrDefaultAsync(a => a.Id == authorId, cancellationToken)
             .ConfigureAwait(false);
@@ -318,11 +326,36 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
         var books = author.BookAuthors
             .Select(ba => ba.Book)
             .Where(b => includeIgnored || !b.IsIgnored)
+            .ToList();
+
+        // Group by series; ungrouped books collapse into a single "Standalone" group.
+        // Series groups sort alphabetically by name, with Standalone always last.
+        var seriesGroups = books
+            .Where(b => b.SeriesId is not null)
+            .GroupBy(b => (b.SeriesId!.Value, b.Series?.Name ?? "Unknown series"))
+            .OrderBy(g => g.Key.Item2, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new AuthorBookGroup(
+                g.Key.Item2,
+                g.Key.Item1,
+                g.OrderBy(b => ParsePosition(b.SeriesPosition) ?? double.MaxValue)
+                    .ThenBy(b => b.Title, StringComparer.OrdinalIgnoreCase)
+                    .Select(ToSummary)
+                    .ToList()))
+            .ToList();
+
+        var standaloneBooks = books
+            .Where(b => b.SeriesId is null)
             .OrderBy(b => b.Title, StringComparer.OrdinalIgnoreCase)
             .Select(ToSummary)
             .ToList();
 
-        return new AuthorDetailResult(author, books);
+        var groups = new List<AuthorBookGroup>(seriesGroups);
+        if (standaloneBooks.Count > 0)
+        {
+            groups.Add(new AuthorBookGroup("Standalone", null, standaloneBooks));
+        }
+
+        return new AuthorDetailResult(author, groups, books.Count);
     }
 
     public async Task<BookDetailResult?> GetBookDetailAsync(int bookId, bool includeIgnoredEditions = false, CancellationToken cancellationToken = default)
@@ -515,7 +548,10 @@ internal sealed class LibraryQueryService(IDbContextFactory<BookTrakContext> con
             b.PreferredEdition?.PublishDate,
             earliestYear,
             visibleEditions.Count,
-            b.Description);
+            b.Description,
+            b.SeriesId,
+            b.Series?.Name,
+            b.SeriesPosition);
     }
 
     private static string? ToWebPath(string? coverPath) => CoverPaths.ToWebPath(coverPath);
