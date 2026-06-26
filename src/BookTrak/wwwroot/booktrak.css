@@ -570,6 +570,22 @@ a:hover {
     font-weight: 600;
 }
 
+.edition-cover-thumb {
+    width: 40px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: var(--radius);
+    display: block;
+}
+
+.edition-cover-thumb-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-border);
+    font-size: 1.4rem;
+}
+
 /* Reading Log: compact inline editors (the shared .search-box min-width is far too
    wide for date cells) and a header that stays put while the long list scrolls. */
 .reading-log-table th {

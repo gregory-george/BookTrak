@@ -417,6 +417,7 @@ else
         <table class="editions-table">
             <thead>
                 <tr>
+                    <th>Cover</th>
                     <th>Format</th>
                     <th>ISBN</th>
                     <th>ASIN</th>
@@ -433,6 +434,19 @@ else
                 @foreach (var edition in _result.Editions)
                 {
                     <tr>
+                        <td>
+                            @{
+                                var editionCover = CoverPaths.ToWebPath(edition.CoverPath);
+                            }
+                            @if (editionCover is not null)
+                            {
+                                <img class="edition-cover-thumb" src="@editionCover" alt="@(edition.Format) cover" />
+                            }
+                            else
+                            {
+                                <div class="edition-cover-thumb edition-cover-thumb-placeholder">@(edition.Format == EditionFormat.Audiobook ? "🎧" : "📕")</div>
+                            }
+                        </td>
                         <td>
                             @edition.Format
                             @if (book.PreferredEditionId == edition.Id)
