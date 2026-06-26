@@ -467,9 +467,17 @@ else
                         <td>@(edition.Narrator ?? "—")</td>
                         <td>@FormatDuration(edition.DurationSeconds)</td>
                         <td>
-                            <button class="btn-danger" disabled="@(_deletingEditionId == edition.Id)" @onclick="() => DeleteEditionAsync(edition.Id)">
-                                @(_deletingEditionId == edition.Id ? "Deleting…" : "Delete")
-                            </button>
+                            <div class="add-edition-menu">
+                                <button class="btn-primary" disabled="@(_deletingEditionId == edition.Id)" @onclick="() => ToggleActionsMenu(edition.Id)">
+                                    @(_deletingEditionId == edition.Id ? "Deleting…" : (_actionsMenuEditionId == edition.Id ? "Actions ▴" : "Actions ▾"))
+                                </button>
+                                @if (_actionsMenuEditionId == edition.Id)
+                                {
+                                    <div class="add-edition-dropdown">
+                                        <button @onclick="() => DeleteEditionAsync(edition.Id)">🗑️ Delete this edition</button>
+                                    </div>
+                                }
+                            </div>
                         </td>
                     </tr>
                 }
@@ -663,6 +671,10 @@ else
     }
 
     private int? _deletingEditionId;
+    private int? _actionsMenuEditionId;
+
+    private void ToggleActionsMenu(int editionId)
+        => _actionsMenuEditionId = _actionsMenuEditionId == editionId ? null : editionId;
 
     private async Task DeleteEditionAsync(int editionId)
     {
@@ -670,6 +682,8 @@ else
         {
             return;
         }
+
+        _actionsMenuEditionId = null;
 
         var edition = _result?.Editions.FirstOrDefault(e => e.Id == editionId);
         if (edition is null)
