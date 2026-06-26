@@ -151,6 +151,11 @@ public interface ILibraryWriteService
     /// sweep clears. No-op if the edition doesn't exist.</summary>
     Task DeleteEditionAsync(int editionId, CancellationToken cancellationToken = default);
 
+    /// <summary>Makes the given edition the book's preferred edition, so its cover becomes the
+    /// book's display cover. No-op if the edition is already preferred. Throws if the edition
+    /// doesn't exist.</summary>
+    Task SetPreferredEditionAsync(int editionId, CancellationToken cancellationToken = default);
+
     /// <summary>Enriches a new audiobook Edition from audnexus by ASIN and attaches it to the
     /// given Book. If an edition with that ASIN is already attached, returns it unchanged
     /// (Success=true) instead of duplicating. Falls back to a user-facing error — never throws —
@@ -829,6 +834,24 @@ internal sealed class LibraryWriteService(
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         context.Editions.Remove(edition);
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task SetPreferredEditionAsync(int editionId, CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var edition = await context.Editions
+            .Include(e => e.Book)
+            .FirstOrDefaultAsync(e => e.Id == editionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Edition {editionId} not found.");
+
+        if (edition.Book.PreferredEditionId == editionId)
+        {
+            return;
+        }
+
+        edition.Book.PreferredEditionId = editionId;
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 

@@ -474,6 +474,10 @@ else
                                 @if (_actionsMenuEditionId == edition.Id)
                                 {
                                     <div class="add-edition-dropdown">
+                                        @if (book.PreferredEditionId != edition.Id && !edition.IsIgnored)
+                                        {
+                                            <button @onclick="() => MakePreferredEditionAsync(edition.Id)">⭐ Make this the preferred edition</button>
+                                        }
                                         <button @onclick="() => DeleteEditionAsync(edition.Id)">🗑️ Delete this edition</button>
                                     </div>
                                 }
@@ -675,6 +679,14 @@ else
 
     private void ToggleActionsMenu(int editionId)
         => _actionsMenuEditionId = _actionsMenuEditionId == editionId ? null : editionId;
+
+    private async Task MakePreferredEditionAsync(int editionId)
+    {
+        _actionsMenuEditionId = null;
+        await LibraryWriteService.SetPreferredEditionAsync(editionId);
+        await LoadAsync();
+        StateHasChanged();
+    }
 
     private async Task DeleteEditionAsync(int editionId)
     {
