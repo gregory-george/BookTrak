@@ -213,6 +213,9 @@ a:hover {
 
 .book-row {
     margin-bottom: 1.1rem;
+    /* Column count + fixed track width are set inline from Library.razor (measured client-side),
+       so cards keep a constant size and the number per row follows the window width. */
+    justify-content: start;
 }
 
 .book-card {

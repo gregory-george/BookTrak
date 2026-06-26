@@ -3,6 +3,7 @@
 @using BookTrak.Hosting
 @using BookTrak.Services
 @inject ILibraryQueryService LibraryQueryService
+@inject IJSRuntime JS
 @implements IDisposable
 
 <PageTitle>Library — BookTrak</PageTitle>
@@ -133,9 +134,9 @@ else
 {
     <p class="muted">@_totalBooks book@(_totalBooks == 1 ? "" : "s")</p>
 
-    <div class="library-scroll">
+    <div class="library-scroll" @ref="_scrollEl">
         <Virtualize @ref="_virtualizeRef" Context="row" ItemsProvider="LoadRowsAsync">
-            <div class="book-grid book-row">
+            <div class="book-grid book-row" style="grid-template-columns: repeat(@_columns, @(CardWidthPx)px);">
                 @foreach (var book in row)
                 {
                     <BookCard Book="book" OnDeleted="LoadAsync" />
@@ -146,9 +147,17 @@ else
 }
 
 @code {
-    private const int ColumnsPerRow = 16;
+    // Fixed card width (px) and grid gap (px) — must stay in sync with .book-grid in booktrak.css.
+    // The column count is measured from the live container width on the client, so cards keep a
+    // constant size and the number per row follows the window instead of stretching.
+    private const int CardWidthPx = 150;
+    private const int GapPx = 18; // 1.1rem ≈ 17.6px
 
+    private int _columns = 6;
+    private IReadOnlyList<LibraryBookSummary> _allBooks = [];
     private List<LibraryBookSummary[]> _rows = [];
+    private ElementReference _scrollEl;
+    private DotNetObjectReference<Library>? _dotNetRef;
     private Virtualize<LibraryBookSummary[]>? _virtualizeRef;
     private string? _searchText;
     private readonly AppConfig _config = AppConfig.LoadOrCreate();
@@ -184,6 +193,44 @@ else
         _selectedSeriesIds.Count > 0 ? _selectedSeriesIds : null,
         _selectedRatingBuckets.Count > 0 ? _selectedRatingBuckets : null);
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _dotNetRef = DotNetObjectReference.Create(this);
+            var columns = await JS.InvokeAsync<int>("bookTrakLibraryGrid.observe", _scrollEl, _dotNetRef, CardWidthPx, GapPx);
+            if (columns != _columns)
+            {
+                _columns = columns;
+                RebuildRows();
+                StateHasChanged();
+                if (_virtualizeRef is not null)
+                {
+                    await _virtualizeRef.RefreshDataAsync();
+                }
+            }
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnColumnsChanged(int columns)
+    {
+        if (columns == _columns)
+        {
+            return;
+        }
+
+        _columns = columns;
+        RebuildRows();
+        StateHasChanged();
+        if (_virtualizeRef is not null)
+        {
+            await _virtualizeRef.RefreshDataAsync();
+        }
+    }
+
+    private void RebuildRows() => _rows = _allBooks.Chunk(_columns).ToList();
+
     private async Task LoadAsync()
     {
         _loading = true;
@@ -191,7 +238,8 @@ else
         var books = await LibraryQueryService.GetLibraryAsync(query);
         _facets = await LibraryQueryService.GetLibraryFacetsAsync(query);
         _totalBooks = books.Count;
-        _rows = books.Chunk(ColumnsPerRow).ToList();
+        _allBooks = books;
+        RebuildRows();
         _loading = false;
 
         if (_virtualizeRef is not null)
@@ -302,7 +350,19 @@ else
         _ => "Unrated",
     };
 
-    public void Dispose() => _debounceCts?.Cancel();
+    public void Dispose()
+    {
+        _debounceCts?.Cancel();
+
+        if (_dotNetRef is not null)
+        {
+            // Fire-and-forget: the circuit may already be tearing down, so ignore JS failures.
+            _ = JS.InvokeVoidAsync("bookTrakLibraryGrid.disconnect").AsTask().ContinueWith(
+                static _ => { }, TaskScheduler.Default);
+            _dotNetRef.Dispose();
+            _dotNetRef = null;
+        }
+    }
 
     private ValueTask<ItemsProviderResult<LibraryBookSummary[]>> LoadRowsAsync(ItemsProviderRequest request)
     {
