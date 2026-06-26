@@ -148,13 +148,13 @@ public class Program
 
         tray = new TrayApplicationContext(port, requestShutdown: InitiateShutdown);
 
-        // No browser tab connected within 10s of the last one disconnecting (closed tab/browser,
+        // No browser tab connected within 5s of the last one disconnecting (closed tab/browser,
         // not just a refresh) means nobody's using the app — finish in-flight work and exit, same
         // as Quit, so the tray icon doesn't linger forever after the user is done.
         ThreadPool.QueueUserWorkItem(async _ => await IdleShutdownMonitor.WatchAsync(
             getConnectedCircuits: () => circuitCounter.Count,
             onIdleTimeout: InitiateShutdown,
-            gracePeriod: TimeSpan.FromSeconds(10),
+            gracePeriod: TimeSpan.FromSeconds(5),
             pollInterval: TimeSpan.FromSeconds(2),
             cancellationToken: idleMonitorCts.Token).ConfigureAwait(false));
 
