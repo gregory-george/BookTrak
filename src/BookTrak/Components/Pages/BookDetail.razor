@@ -463,7 +463,7 @@ else
                         <td>@(edition.NumberOfPages?.ToString() ?? "—")</td>
                         <td>@(edition.Language ?? "—")</td>
                         <td>@(edition.Publisher ?? "—")</td>
-                        <td>@(edition.PublishDate ?? "—")</td>
+                        <td>@FormatPublishDate(edition.PublishDate)</td>
                         <td>@(edition.Narrator ?? "—")</td>
                         <td>@FormatDuration(edition.DurationSeconds)</td>
                         <td>
@@ -969,6 +969,35 @@ else
 
         _refreshing = false;
         StateHasChanged();
+    }
+
+    private static string FormatPublishDate(string? publishDate)
+    {
+        if (string.IsNullOrWhiteSpace(publishDate))
+        {
+            return "—";
+        }
+
+        var trimmed = publishDate.Trim();
+
+        // A bare 4-digit year — show it as-is.
+        if (trimmed.Length == 4 && int.TryParse(trimmed, out _))
+        {
+            return trimmed;
+        }
+
+        // A full date — normalize to yyyy-MM-dd.
+        if (DateTime.TryParse(
+                trimmed,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None,
+                out var parsed))
+        {
+            return parsed.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        // Anything else (free-text we can't parse) — show the original.
+        return trimmed;
     }
 
     private static string FormatDuration(int? seconds)
