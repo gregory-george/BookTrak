@@ -195,10 +195,6 @@ else
     <div class="page-header" style="margin-top:2rem;">
         <h2 style="margin:0;">Editions (@_result.Editions.Count)</h2>
         <div class="toolbar">
-            <label class="muted">
-                <input type="checkbox" checked="@_includeIgnoredEditions" @onchange="OnIncludeIgnoredEditionsChanged" />
-                Show ignored editions
-            </label>
             @if (!_result.Editions.Any(e => e.Format == EditionFormat.Audiobook))
             {
                 <button class="btn-primary" disabled="@_searchingAudiobooks" @onclick="FindMatchingAudiobookAsync">
@@ -378,8 +374,8 @@ else
                         <td>@(edition.Narrator ?? "—")</td>
                         <td>@FormatDuration(edition.DurationSeconds)</td>
                         <td>
-                            <button class="btn-primary" @onclick="() => ToggleEditionIgnoredAsync(edition.Id)">
-                                @(edition.IsIgnored ? "Un-ignore" : "Ignore")
+                            <button class="btn-danger" disabled="@(_deletingEditionId == edition.Id)" @onclick="() => DeleteEditionAsync(edition.Id)">
+                                @(_deletingEditionId == edition.Id ? "Deleting…" : "Delete")
                             </button>
                         </td>
                     </tr>
@@ -397,7 +393,6 @@ else
     private bool _notFound;
     private bool _refreshing;
     private string? _refreshMessage;
-    private bool _includeIgnoredEditions;
 
     private BookStatus _status;
     private DateTime? _dateStarted;
@@ -446,7 +441,7 @@ else
 
     private async Task LoadAsync()
     {
-        var result = await LibraryQueryService.GetBookDetailAsync(BookId, _includeIgnoredEditions);
+        var result = await LibraryQueryService.GetBookDetailAsync(BookId, includeIgnoredEditions: true);
         if (result is null)
         {
             _notFound = true;
@@ -557,22 +552,37 @@ else
         Navigation.NavigateTo("/");
     }
 
-    private async Task ToggleEditionIgnoredAsync(int editionId)
+    private int? _deletingEditionId;
+
+    private async Task DeleteEditionAsync(int editionId)
     {
+        if (_deletingEditionId is not null)
+        {
+            return;
+        }
+
         var edition = _result?.Editions.FirstOrDefault(e => e.Id == editionId);
         if (edition is null)
         {
             return;
         }
 
-        await LibraryWriteService.SetEditionIgnoredAsync(editionId, !edition.IsIgnored);
-        await LoadAsync();
-    }
+        var label = edition.Format + (edition.Publisher is not null ? $" — {edition.Publisher}" : "");
+        var confirmed = await JS.InvokeAsync<bool>("confirm",
+            $"Delete the {label} edition? This can't be undone.");
+        if (!confirmed)
+        {
+            return;
+        }
 
-    private async Task OnIncludeIgnoredEditionsChanged(ChangeEventArgs e)
-    {
-        _includeIgnoredEditions = e.Value is true;
+        _deletingEditionId = editionId;
+        StateHasChanged();
+
+        await LibraryWriteService.DeleteEditionAsync(editionId);
         await LoadAsync();
+
+        _deletingEditionId = null;
+        StateHasChanged();
     }
 
     private void ToggleAddEditionPanel()

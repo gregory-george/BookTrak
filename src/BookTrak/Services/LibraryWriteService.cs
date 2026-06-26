@@ -145,6 +145,12 @@ public interface ILibraryWriteService
     /// auto-pick), or null if none remain.</summary>
     Task SetEditionIgnoredAsync(int editionId, bool isIgnored, CancellationToken cancellationToken = default);
 
+    /// <summary>Permanently deletes a single Edition. If it was the book's preferred edition,
+    /// repoints to the best remaining non-ignored edition (or null if none remain); if it was the
+    /// recorded read edition, that pointer is nulled. The cover file becomes an orphan the next
+    /// sweep clears. No-op if the edition doesn't exist.</summary>
+    Task DeleteEditionAsync(int editionId, CancellationToken cancellationToken = default);
+
     /// <summary>Enriches a new audiobook Edition from audnexus by ASIN and attaches it to the
     /// given Book. If an edition with that ASIN is already attached, returns it unchanged
     /// (Success=true) instead of duplicating. Falls back to a user-facing error — never throws —
@@ -784,6 +790,38 @@ internal sealed class LibraryWriteService(
             edition.Book.PreferredEditionId = replacement?.Id;
         }
 
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteEditionAsync(int editionId, CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var edition = await context.Editions
+            .Include(e => e.Book).ThenInclude(b => b.Editions)
+            .FirstOrDefaultAsync(e => e.Id == editionId, cancellationToken).ConfigureAwait(false);
+        if (edition is null)
+        {
+            return;
+        }
+
+        var book = edition.Book;
+
+        // Break the Book->Edition Restrict FKs before removing the row, otherwise the delete throws.
+        if (book.PreferredEditionId == editionId)
+        {
+            var replacement = PickPreferredLocalEdition(book.Editions.Where(e => e.Id != editionId && !e.IsIgnored));
+            book.PreferredEditionId = replacement?.Id;
+        }
+
+        if (book.ReadEditionId == editionId)
+        {
+            book.ReadEditionId = null;
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        context.Editions.Remove(edition);
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
