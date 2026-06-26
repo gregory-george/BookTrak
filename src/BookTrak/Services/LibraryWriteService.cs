@@ -157,6 +157,13 @@ public interface ILibraryWriteService
     /// so the UI can offer manual entry when audnexus is unavailable or has no match.</summary>
     Task<AddEditionResult> AddAudiobookEditionByAsinAsync(int bookId, string asin, CancellationToken cancellationToken = default);
 
+    /// <summary>Enriches an existing Book with a Physical edition by picking the chosen Open Library
+    /// work's best edition (same auto-pick scoring as add-time) and attaching it. Dedups by OL
+    /// edition id against editions already on the book. Returns a user-facing error — never throws —
+    /// when Open Library is unavailable or the work has no editions, so the UI can fall back to
+    /// manual entry.</summary>
+    Task<AddEditionResult> AddEditionFromOpenLibraryWorkAsync(int bookId, string openLibraryWorkId, CancellationToken cancellationToken = default);
+
     /// <summary>Searches Audible's catalog for audiobooks matching a book's title + primary author
     /// (discovery only — see CLAUDE.md), returning candidates for the user to pick from. Returns
     /// an Error string (and empty candidates) when Audible's search is unavailable rather than
@@ -879,6 +886,54 @@ internal sealed class LibraryWriteService(
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         return new AddEditionResult(true, edition.Id, null);
+    }
+
+    public async Task<AddEditionResult> AddEditionFromOpenLibraryWorkAsync(int bookId, string openLibraryWorkId, CancellationToken cancellationToken = default)
+    {
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var book = await context.Books.FirstOrDefaultAsync(b => b.Id == bookId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Book {bookId} not found.");
+
+        IReadOnlyList<NormalizedEdition> editions;
+        try
+        {
+            editions = await openLibraryClient.GetWorkEditionsAsync(openLibraryWorkId, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (OpenLibraryUnavailableException ex)
+        {
+            return new AddEditionResult(false, null, ex.Message);
+        }
+
+        var best = PickPreferredEdition(editions);
+        if (best is null)
+        {
+            return new AddEditionResult(false, null, "Open Library has no editions for that book — add one manually instead.");
+        }
+
+        // Dedup against editions already attached to this book (re-picking the same printing is a no-op).
+        if (best.OpenLibraryEditionId is not null)
+        {
+            var existing = await context.Editions
+                .FirstOrDefaultAsync(e => e.BookId == bookId && e.OpenLibraryEditionId == best.OpenLibraryEditionId, cancellationToken)
+                .ConfigureAwait(false);
+            if (existing is not null)
+            {
+                return new AddEditionResult(true, existing.Id, null);
+            }
+        }
+
+        var entity = await BuildEditionAsync(best, bookId, cancellationToken).ConfigureAwait(false);
+        context.Editions.Add(entity);
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        if (book.PreferredEditionId is null)
+        {
+            book.PreferredEditionId = entity.Id;
+            await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return new AddEditionResult(true, entity.Id, null);
     }
 
     public async Task<AudiobookSearchResult> SearchAudiobookCandidatesAsync(int bookId, CancellationToken cancellationToken = default)

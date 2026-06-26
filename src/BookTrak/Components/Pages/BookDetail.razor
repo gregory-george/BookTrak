@@ -6,6 +6,7 @@
 @inject ILibraryWriteService LibraryWriteService
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
+@implements IDisposable
 
 <PageTitle>@(_result?.Book.Title ?? "Book") — BookTrak</PageTitle>
 
@@ -195,26 +196,103 @@ else
     <div class="page-header" style="margin-top:2rem;">
         <h2 style="margin:0;">Editions (@_result.Editions.Count)</h2>
         <div class="toolbar">
-            @if (!_result.Editions.Any(e => e.Format == EditionFormat.Audiobook))
-            {
-                <button class="btn-primary" disabled="@_searchingAudiobooks" @onclick="FindMatchingAudiobookAsync">
-                    @(_searchingAudiobooks ? "Searching…" : "Find matching audiobook")
+            <div class="add-edition-menu">
+                <button class="btn-primary" @onclick="ToggleAddMenu">
+                    @(_addMenuOpen ? "Add edition ▴" : "+ Add edition ▾")
                 </button>
-            }
-            <button class="btn-primary" @onclick="ToggleAddEditionPanel">
-                @(_showAddEdition ? "Cancel" : "+ Add edition")
-            </button>
+                @if (_addMenuOpen)
+                {
+                    <div class="add-edition-dropdown">
+                        <button @onclick="@(() => OpenAddPanel(AddPanel.Manual))">✏️ Manually add information</button>
+                        <button @onclick="@(() => OpenAddPanel(AddPanel.Physical))">📖 Search for a physical book</button>
+                        <button @onclick="@(() => OpenAddPanel(AddPanel.Audiobook))">🎧 Search for an audiobook</button>
+                    </div>
+                }
+            </div>
         </div>
     </div>
 
-    @if (_audiobookCandidates is not null)
+    @if (_addPanel == AddPanel.Physical)
     {
         <div class="status-editor">
-            @if (_audiobookCandidates.Count == 0)
+            <div class="toolbar">
+                <input class="search-box" type="search" placeholder="Search Open Library books…"
+                       value="@_physicalSearchText" @oninput="OnPhysicalSearchInput" />
+                <button class="btn-primary" @onclick="CloseAddPanel">Cancel</button>
+            </div>
+
+            @if (_physicalError is not null)
             {
-                <p class="muted">@(_audiobookMessage ?? "No audiobook matches found on Audible. Add one manually with its ASIN below.")</p>
+                <p class="muted">@_physicalError</p>
             }
-            else
+            else if (_physicalSearching)
+            {
+                <p class="muted">Searching…</p>
+            }
+            else if (!string.IsNullOrWhiteSpace(_physicalSearchText) && _physicalResults.Count == 0)
+            {
+                <p class="muted">No Open Library books match "@_physicalSearchText".</p>
+            }
+            else if (_physicalResults.Count > 0)
+            {
+                <p class="muted">Pick the printing to attach to this book as a physical edition.</p>
+                <table class="editions-table">
+                    <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>Author(s)</th>
+                            <th>First published</th>
+                            <th>Rating</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var result in _physicalResults)
+                        {
+                            <tr>
+                                <td>@result.Title</td>
+                                <td>@(string.IsNullOrEmpty(result.AuthorNames) ? "—" : result.AuthorNames)</td>
+                                <td>@(result.FirstPublishYear?.ToString() ?? "—")</td>
+                                <td>@(result.RatingsAverage is { } avg ? $"{avg:0.0} ({result.RatingsCount} ratings)" : "—")</td>
+                                <td>
+                                    <button class="btn-primary"
+                                            disabled="@(result.OpenLibraryWorkId is null || _addingPhysical == result.OpenLibraryWorkId)"
+                                            @onclick="() => AddPhysicalEditionAsync(result)">
+                                        @(_addingPhysical == result.OpenLibraryWorkId ? "Adding…" : "Add edition")
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+
+            @if (_addEditionMessage is not null)
+            {
+                <p class="muted">@_addEditionMessage</p>
+            }
+        </div>
+    }
+
+    @if (_addPanel == AddPanel.Audiobook)
+    {
+        <div class="status-editor">
+            <div class="toolbar">
+                <button class="btn-primary" disabled="@_searchingAudiobooks" @onclick="FindMatchingAudiobookAsync">
+                    @(_searchingAudiobooks ? "Searching…" : "Search Audible again")
+                </button>
+                <button class="btn-primary" @onclick="CloseAddPanel">Cancel</button>
+            </div>
+
+            @if (_searchingAudiobooks)
+            {
+                <p class="muted">Searching Audible…</p>
+            }
+            else if (_audiobookCandidates is { Count: 0 })
+            {
+                <p class="muted">@(_audiobookMessage ?? "No audiobook matches found on Audible. Add one manually with its ASIN via “Manually add information”.")</p>
+            }
+            else if (_audiobookCandidates is { Count: > 0 })
             {
                 <p class="muted">Audible matches — pick the one to add as an audiobook edition:</p>
                 <table class="editions-table">
@@ -244,15 +322,15 @@ else
                         }
                     </tbody>
                 </table>
-            }
-            @if (_audiobookMessage is not null && _audiobookCandidates.Count > 0)
-            {
-                <p class="muted">@_audiobookMessage</p>
+                @if (_audiobookMessage is not null)
+                {
+                    <p class="muted">@_audiobookMessage</p>
+                }
             }
         </div>
     }
 
-    @if (_showAddEdition)
+    @if (_addPanel == AddPanel.Manual)
     {
         <div class="status-editor">
             <div class="toolbar">
@@ -264,6 +342,7 @@ else
                         <option value="@EditionFormat.Audiobook">Audiobook</option>
                     </select>
                 </label>
+                <button class="btn-primary" @onclick="CloseAddPanel" style="align-self:end;">Cancel</button>
             </div>
 
             @if (_newEditionFormat == EditionFormat.Audiobook)
@@ -407,7 +486,17 @@ else
     private bool _savingSeries;
     private string? _seriesMessage;
 
-    private bool _showAddEdition;
+    private bool _addMenuOpen;
+    private enum AddPanel { None, Manual, Physical, Audiobook }
+    private AddPanel _addPanel = AddPanel.None;
+
+    private string? _physicalSearchText;
+    private List<WorkSearchResult> _physicalResults = [];
+    private bool _physicalSearching;
+    private string? _physicalError;
+    private string? _addingPhysical;
+    private CancellationTokenSource? _physicalDebounceCts;
+
     private EditionFormat _newEditionFormat;
     private string? _newEditionAsin;
     private string? _newEditionIsbn;
@@ -436,6 +525,13 @@ else
         _audiobookCandidates = null;
         _audiobookMessage = null;
         _addedCandidateAsins.Clear();
+        _addMenuOpen = false;
+        _addPanel = AddPanel.None;
+        _addEditionMessage = null;
+        _physicalSearchText = null;
+        _physicalResults = [];
+        _physicalError = null;
+        _addingPhysical = null;
         await LoadAsync();
     }
 
@@ -585,14 +681,116 @@ else
         StateHasChanged();
     }
 
-    private void ToggleAddEditionPanel()
+    private void ToggleAddMenu() => _addMenuOpen = !_addMenuOpen;
+
+    private void OpenAddPanel(AddPanel panel)
     {
-        _showAddEdition = !_showAddEdition;
+        _addMenuOpen = false;
+        _addPanel = panel;
         _addEditionMessage = null;
-        if (_showAddEdition)
+
+        switch (panel)
         {
-            ResetNewEditionForm();
+            case AddPanel.Manual:
+                ResetNewEditionForm();
+                break;
+            case AddPanel.Physical:
+                _physicalError = null;
+                _physicalResults = [];
+                _physicalSearchText = _result?.Book.Title;
+                TriggerPhysicalSearch();
+                break;
+            case AddPanel.Audiobook:
+                _ = FindMatchingAudiobookAsync();
+                break;
         }
+    }
+
+    private void CloseAddPanel()
+    {
+        _addPanel = AddPanel.None;
+        _addEditionMessage = null;
+    }
+
+    private void OnPhysicalSearchInput(ChangeEventArgs e)
+    {
+        _physicalSearchText = e.Value?.ToString();
+        _physicalError = null;
+        TriggerPhysicalSearch();
+    }
+
+    private void TriggerPhysicalSearch()
+    {
+        _physicalDebounceCts?.Cancel();
+        _physicalDebounceCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _physicalDebounceCts = cts;
+        _ = DebouncePhysicalSearchAsync(cts.Token);
+    }
+
+    private async Task DebouncePhysicalSearchAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(300, token);
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_physicalSearchText))
+            {
+                _physicalResults = [];
+                StateHasChanged();
+                return;
+            }
+
+            _physicalSearching = true;
+            StateHasChanged();
+
+            try
+            {
+                _physicalResults = (await LibraryWriteService.SearchWorksAsync(_physicalSearchText, token)).ToList();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _physicalError = "Couldn't reach Open Library — check your connection and try again.";
+                _physicalResults = [];
+            }
+
+            _physicalSearching = false;
+            StateHasChanged();
+        }
+        catch (TaskCanceledException)
+        {
+            // superseded by a newer keystroke
+        }
+    }
+
+    private async Task AddPhysicalEditionAsync(WorkSearchResult result)
+    {
+        if (result.OpenLibraryWorkId is null)
+        {
+            return;
+        }
+
+        _addingPhysical = result.OpenLibraryWorkId;
+        _addEditionMessage = null;
+        StateHasChanged();
+
+        var addResult = await LibraryWriteService.AddEditionFromOpenLibraryWorkAsync(BookId, result.OpenLibraryWorkId);
+        if (addResult.Success)
+        {
+            _addPanel = AddPanel.None;
+            await LoadAsync();
+        }
+        else
+        {
+            _addEditionMessage = addResult.Error;
+        }
+
+        _addingPhysical = null;
+        StateHasChanged();
     }
 
     private void OnNewEditionFormatChanged(ChangeEventArgs e)
@@ -630,7 +828,7 @@ else
         var result = await LibraryWriteService.AddAudiobookEditionByAsinAsync(BookId, _newEditionAsin.Trim());
         if (result.Success)
         {
-            _showAddEdition = false;
+            _addPanel = AddPanel.None;
             await LoadAsync();
         }
         else
@@ -663,7 +861,7 @@ else
 
         if (result.Success)
         {
-            _showAddEdition = false;
+            _addPanel = AddPanel.None;
             await LoadAsync();
         }
         else
@@ -745,4 +943,6 @@ else
             ? $"{span.Hours}h {span.Minutes}m"
             : $"{span.Minutes}m {span.Seconds}s";
     }
+
+    public void Dispose() => _physicalDebounceCts?.Cancel();
 }
