@@ -64,4 +64,4 @@ BookTrak/
 
 ## License
 
-Personal project — no license file yet.
+Released under the [MIT License](LICENSE).
