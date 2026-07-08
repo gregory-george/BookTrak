@@ -20,7 +20,7 @@ Solution `BookTrak.slnx`: app in `src/BookTrak/`, xUnit tests in `tests/BookTrak
 - `Hosting/` — tray app (`TrayApplicationContext`) and lifecycle plumbing: `InstanceLock`/`PortFinder`/`AppConfig`/`AppPaths`, `InFlightOperationCounter` + `CircuitCounter` + `TrackingCircuitHandler`, `ShutdownCoordinator` ("finish, then exit"), `IdleShutdownMonitor` (auto-exit when idle).
 - `Data/` — `BookTrakContext` (+ `BookTrakContextFactory`), `Entities/`, `DatabaseStartup` (backup + migrate), `SqlitePragmaInterceptor` (WAL/busy_timeout), `OrphanCoverCleanup`. EF migrations live in `Migrations/` (incl. `AddFts5Search`).
 - `OpenLibrary/`, `Audnexus/`, `Audible/` — each: a typed client, a normalizer (`Raw*` → `Normalized*` models), and a `…ServiceCollectionExtensions` registrar. Shared HTTP hygiene lives under `OpenLibrary/`: `PoliteRetryPolicy`, `PoliteRateLimiter`, `UserAgent`, `CoverCacheService`.
-- `Services/` — app logic over the DB: `LibraryQueryService`, `LibraryWriteService`, `StatsQueryService`, `ImportService`, `MaintenanceService`.
+- `Services/` — app logic over the DB: `LibraryQueryService`, `LibraryWriteService` (incl. delete/ignore/preferred-edition/refresh logic), `StatsQueryService`, `ImportService`, `MaintenanceService`, plus the `CoverPaths` path helper.
 - `Import/` — Goodreads/StoryGraph CSV parsing. `Components/` — Blazor UI (`Pages/`, `Layout/`, `Shared/`).
 
 ## Architecture
@@ -29,6 +29,7 @@ Solution `BookTrak.slnx`: app in `src/BookTrak/`, xUnit tests in `tests/BookTrak
   - BookTrak **`Book` ≈ Open Library Work** (work-level fields: title, description, subjects, average rating).
   - **`Edition`** = a specific printing (edition-level: ISBN, pages, language, cover, publisher, publish date). `pages` and `language` are **edition-level, not on Book**.
   - An **audiobook is just an `Edition` with `Format = Audiobook`** — no separate copies table. Audiobook-only fields (`Narrator`, `DurationSeconds`, `AudioPublisher`, `Asin`) hang off the edition.
+  - **`Genre`/`BookGenre`** (curated taxonomy) is distinct from `Book.Subjects` (raw OL subject strings, stored as a JSON array). `Series` hangs off Book (`SetNull` on delete) with the string `SeriesPosition`.
 - **Data sources:** Open Library (`openlibrary.org`, no API key) for works/editions/authors; **audnexus** (`api.audnex.us`) for audiobooks, keyed by Audible **ASIN**. Manual entry is always an available fallback. **Never scrape Audible directly** — with one narrow, documented carve-out: the `BookTrak.Audible` namespace calls Audible's unofficial catalog-search JSON endpoint (`api.audible.com/1.0/catalog/products?keywords=…`) for **discovery only** (title+author → candidate ASIN, us region). The actual audiobook metadata fetch and edition creation still go through audnexus by ASIN; this path is best-effort with manual ASIN entry as fallback, sends no bot-shaped User-Agent, and never scrapes Audible HTML.
 
 ## Non-negotiable rules (these are the bug-magnets — see §4, §10, §14)
@@ -36,9 +37,9 @@ Solution `BookTrak.slnx`: app in `src/BookTrak/`, xUnit tests in `tests/BookTrak
 - **Ratings (`MyRating`, `AverageRating`) are stored as `double`/REAL, never `decimal`.** SQLite maps `decimal`→TEXT and breaks ordering/comparison. `MyRating` is half-stars, 0.5–5.0.
 - **Authors are modeled only via the `BookAuthor` join table.** There is **no scalar `AuthorId` on `Book`** (works can have multiple authors).
 - **Book has no cover columns.** Its display cover is **derived from `PreferredEditionId`**. Don't denormalize a cover onto Book.
-- **Self-referencing FKs** `Book.PreferredEditionId` and `Book.ReadEditionId` must be `DeleteBehavior.Restrict` (EF `NoAction`) — the Book↔Edition cycle otherwise throws multiple-cascade-path errors. Deleting a Book cascades to its Editions; null the Preferred/Read pointers first if needed.
-- **`IsIgnored` is an orthogonal bool on BOTH `Book` (work) and `Edition`.** It is *not* a status value. One "hide/show ignored" UI toggle (default hidden) filters both levels. The preferred edition must never be an ignored edition — repoint if you ignore it.
-- **Re-sync/refresh touches OL-sourced fields only.** Never clobber local state: `Status`, `MyRating`, `IsIgnored`, preferred-edition choice.
+- **Self-referencing FKs** `Book.PreferredEditionId` and `Book.ReadEditionId` must be `DeleteBehavior.Restrict` (EF `NoAction`) — the Book↔Edition cycle otherwise throws multiple-cascade-path errors. Deleting a Book cascades to its Editions; null the Preferred/Read pointers first — `DeleteBookAsync`/`DeleteEditionAsync` in `LibraryWriteService` already do this (and repoint the preferred edition on edition delete), so route deletes through them.
+- **`IsIgnored` is an orthogonal bool on BOTH `Book` (work) and `Edition`.** It is *not* a status value. Work-level ignore is the active UI feature: Ignore/Un-ignore on book detail, plus "include ignored" checkboxes (default hidden) on the Library and Author detail pages. **Edition-level ignore is legacy, data-level only** — the UI replaced it with edition *delete* (the editions table always shows every edition, badging ignored ones), but `Edition.IsIgnored` and `SetEditionIgnoredAsync` remain honored for data that has it. Invariant either way: **the preferred edition must never be an ignored edition** — `LibraryWriteService` repoints it on both ignore and delete.
+- **Re-sync/refresh touches OL-sourced fields only.** Never clobber local state: `Status`, `MyRating`, `IsIgnored`, preferred-edition choice. Bulk "Refresh All" additionally skips anything synced within `SyncStatus.StaleThreshold` (30 days).
 - **OL/audnexus field normalization is mandatory.** `description` and `bio` come as a string *or* `{type, value}`; dates (birth/death, first-publish) are **free text — never parse as `DateTime`, store as string**. Centralize normalization so the rest of the app sees clean types.
 - **`SeriesPosition` is a string** (`"3"`, `"3.5"`, `"0.5"`), not a number.
 
@@ -55,7 +56,7 @@ Solution `BookTrak.slnx`: app in `src/BookTrak/`, xUnit tests in `tests/BookTrak
 ## Lifecycle / shutdown
 - **Session-bounded** — no overnight/background work.
 - **"Finish, then exit":** on Quit, stop new work, then wait for **zero in-flight ops** (any outbound OL request or cover fetch — wrap each to inc/dec a shared counter) **and** zero connected UI circuits before disposing the host (`ShutdownCoordinator`, 60 s fallback deadline).
-- **Idle auto-shutdown:** once a tab has connected, if connected circuits stay at zero for a **~5 s grace period** (page refresh/navigation tolerated), the app runs the same "finish, then exit" sequence as Quit — so the tray icon doesn't linger after the user closes the browser. (`IdleShutdownMonitor`.)
+- **Idle auto-shutdown:** once a tab has connected, if connected circuits stay at zero for a **5 s grace period** (page refresh/navigation tolerated), the app runs the same "finish, then exit" sequence as Quit — so the tray icon doesn't linger after the user closes the browser. (`IdleShutdownMonitor`.)
 - **Single instance:** a named `Mutex` is the primary gate. If it's already held, read `BookTrak.lock` and reopen the browser at the live port instead of starting a second copy. A leftover lockfile when the mutex was free is from a crashed process — `InstanceLock.IsLive` confirms the recorded PID is alive *and* its process name is `BookTrak`; if not, the lock is stale and cleared.
 - **Port:** start at `6123`, probe upward to next free, persist to `config.json`, write live port + PID to `BookTrak.lock`.
 
@@ -63,17 +64,18 @@ Solution `BookTrak.slnx`: app in `src/BookTrak/`, xUnit tests in `tests/BookTrak
 ```
 BookTrak/
 ├── BookTrak.exe       # self-contained single file
-├── config.json        # port, prefs, schema version, last-sync timestamps
+├── config.json        # port, API contact info, sort prefs, schema version (AppConfig)
 ├── BookTrak.db        # SQLite (+ -wal, -shm at runtime)
 ├── BookTrak.lock      # live port + PID, deleted on clean shutdown
 ├── covers/{books,authors}/   # cached images — NOT backed up (re-fetchable)
-└── backups/           # DB + config.json, timestamp suffix, keep last 10
+└── backups/           # DB + config.json, yyyyMMdd suffix, max one/day, keep last 10 of each
 ```
 
 ## Database specifics (§10)
-- WAL mode + `busy_timeout` pragma (3–5 s) — background fetches + UI writes otherwise throw "database is locked".
+- WAL mode + `busy_timeout` pragma (5 s) — background fetches + UI writes otherwise throw "database is locked".
 - **FTS5 virtual table** over book title/subtitle/author names, kept in sync via insert/update/delete **triggers** (or rebuilt on migration). Powers local search; composes with facet filtering.
-- **Startup migration: back up `BookTrak.db` → `backups/` FIRST, then `context.Database.Migrate()`.** Prune backups to last 10.
+- **Startup migration: back up `BookTrak.db` (+ `config.json`) → `backups/` FIRST, then `context.Database.Migrate()`.** At most one backup per calendar day; prune to last 10 of each. `DatabaseStartup.CreateBackup` also backs the Settings page's "Back up now" button.
+- A `Settings` key/value table exists in the schema but is **currently unused** — app prefs live in `config.json` via `AppConfig`.
 - **Orphan cover cleanup:** startup sweep + manual button; delete cover files no longer referenced by any book/edition.
 
 ## Packaging gotcha
