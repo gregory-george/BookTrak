@@ -43,8 +43,8 @@ if (-not (Test-Path $Destination)) {
 
 Write-Host "Copying published files to $Destination ..." -ForegroundColor Cyan
 
-# $Destination is the LIVE app folder (podcasts.db, backups\, covers\, config.json,
-# run.lock, logs\ all live there at runtime). Never mirror/delete the destination root -
+# $Destination is the LIVE app folder (BookTrak.db, backups\, covers\, config.json,
+# BookTrak.lock all live there at runtime). Never mirror/delete the destination root -
 # only overlay the fresh binaries. /E copies subfolders but never removes files that
 # aren't in the source.
 robocopy $publishDir $Destination /E /XD wwwroot /R:2 /W:5 /NFL /NDL /NJH
