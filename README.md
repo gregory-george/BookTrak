@@ -33,8 +33,8 @@ On first run BookTrak creates everything it needs next to the exe: a SQLite data
 Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 
 ```
-dotnet run --project src/BookTrak/BookTrak.csproj          # dev
-dotnet test                                                  # run the test suite
+dotnet run --project src/BookTrak/BookTrak.csproj   # dev
+dotnet test                                         # run the test suite
 
 dotnet publish src/BookTrak/BookTrak.csproj -c Release -r win-x64 \
   -p:PublishSingleFile=true -p:SelfContained=true
@@ -48,18 +48,18 @@ Everything is relative to the `.exe`, so the whole install is portable — copy 
 
 ```
 BookTrak/
-├── BookTrak.exe       # self-contained single file
-├── config.json        # port, preferences, schema version, last-sync timestamps
-├── BookTrak.db         # SQLite database (+ -wal, -shm while running)
-├── BookTrak.lock       # live port + PID, removed on clean shutdown
-├── covers/             # cached cover images — not backed up, re-fetched on demand
-└── backups/            # timestamped DB + config backups, last 10 kept
+├── BookTrak.exe   # self-contained single file
+├── config.json    # port, preferences, schema version, last-sync timestamps
+├── BookTrak.db    # SQLite database (+ -wal, -shm while running)
+├── BookTrak.lock  # live port + PID, removed on clean shutdown
+├── covers/        # cached cover images — not backed up, re-fetched on demand
+└── backups/       # timestamped DB + config backups, last 10 kept
 ```
 
 ## Known limitations
 
 - No app-level authentication — BookTrak binds only to `127.0.0.1`, so any process or user on the same machine can reach it. This is the accepted trade-off for a single-user local app.
-- Audiobooks are enriched by pasting an Audible ASIN, not by title search — audnexus doesn't support reliable title lookup.
+- Audiobook metadata comes from audnexus, keyed by Audible ASIN. Title/author search can suggest a candidate ASIN (best-effort, via Audible's unofficial catalog search), but pasting a known ASIN remains the reliable path.
 - No CSV export yet; the database file plus its automatic backups are the supported way to keep or move your data.
 
 ## License
