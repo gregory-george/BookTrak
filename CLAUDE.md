@@ -10,9 +10,10 @@ Portable, single-folder, double-click-to-run book & audiobook manager for **Wind
 ## Stack
 - .NET 10, `net10.0-windows`, `OutputType=WinExe`, `UseWindowsForms=true`
 - Blazor Server (Interactive Server) + Kestrel bound to `127.0.0.1` only
-- EF Core + **SQLite** (WAL mode), via `Microsoft.EntityFrameworkCore.Sqlite`
+- EF Core + **SQLite** (WAL mode), via `Microsoft.EntityFrameworkCore.Sqlite`; native provider bundled via `SQLitePCLRaw.bundle_e_sqlite3` (drives the single-file packaging gotcha below)
 - Self-contained single-file publish, `win-x64`
-- HTTP resilience via `Microsoft.Extensions.Http.Resilience` (Polly-based: retry + circuit breaker); `@zxing/browser` (vendored at `wwwroot/lib/zxing/zxing-browser.min.js`) for barcode scanning
+- HTTP resilience via `Microsoft.Extensions.Http.Resilience` (Polly-based: retry + circuit breaker)
+- `@zxing/browser` (vendored at `wwwroot/lib/zxing/zxing-browser.min.js`) for barcode scanning (ISBN scan on the Add-by-ISBN page)
 
 ## Project layout
 Solution `BookTrak.slnx`: app in `src/BookTrak/`, xUnit tests in `tests/BookTrak.Tests/`. Inside `src/BookTrak/`:
@@ -40,7 +41,7 @@ Solution `BookTrak.slnx`: app in `src/BookTrak/`, xUnit tests in `tests/BookTrak
 - **Self-referencing FKs** `Book.PreferredEditionId` and `Book.ReadEditionId` must be `DeleteBehavior.Restrict` (EF `NoAction`) — the Book↔Edition cycle otherwise throws multiple-cascade-path errors. Deleting a Book cascades to its Editions; null the Preferred/Read pointers first — `DeleteBookAsync`/`DeleteEditionAsync` in `LibraryWriteService` already do this (and repoint the preferred edition on edition delete), so route deletes through them.
 - **`IsIgnored` is an orthogonal bool on BOTH `Book` (work) and `Edition`.** It is *not* a status value. Work-level ignore is the active UI feature: Ignore/Un-ignore on book detail, plus "include ignored" checkboxes (default hidden) on the Library and Author detail pages. **Edition-level ignore is legacy, data-level only** — the UI replaced it with edition *delete* (the editions table always shows every edition, badging ignored ones), but `Edition.IsIgnored` and `SetEditionIgnoredAsync` remain honored for data that has it. Invariant either way: **the preferred edition must never be an ignored edition** — `LibraryWriteService` repoints it on both ignore and delete.
 - **Re-sync/refresh touches OL-sourced fields only.** Never clobber local state: `Status`, `MyRating`, `IsIgnored`, preferred-edition choice. Bulk "Refresh All" additionally skips anything synced within `SyncStatus.StaleThreshold` (30 days).
-- **OL/audnexus field normalization is mandatory.** `description` and `bio` come as a string *or* `{type, value}`; dates (birth/death, first-publish) are **free text — never parse as `DateTime`, store as string**. Centralize normalization so the rest of the app sees clean types.
+- **OL/audnexus field normalization is mandatory.** `description` and `bio` come as a string *or* `{type, value}`; dates (birth/death, first-publish) are **free text — never parse as `DateTime`, store as string**. audnexus runtime arrives in **minutes** — convert to `Edition.DurationSeconds` on ingest. Centralize normalization so the rest of the app sees clean types.
 - **`SeriesPosition` is a string** (`"3"`, `"3.5"`, `"0.5"`), not a number.
 
 ## HTTP client hygiene (both OL and audnexus)
@@ -78,8 +79,9 @@ BookTrak/
 - A `Settings` key/value table exists in the schema but is **currently unused** — app prefs live in `config.json` via `AppConfig`.
 - **Orphan cover cleanup:** startup sweep + manual button; delete cover files no longer referenced by any book/edition.
 
-## Packaging gotcha
-Single-file + SQLite needs the native `e_sqlite3` extracted: **`IncludeNativeLibrariesForSelfExtract=true`**. Always smoke-test the published exe in a **clean folder with no SDK** to confirm native extraction + first-run DB creation.
+## Packaging gotchas
+- Single-file + SQLite needs the native `e_sqlite3` extracted: **`IncludeNativeLibrariesForSelfExtract=true`**. Always smoke-test the published exe in a **clean folder with no SDK** to confirm native extraction + first-run DB creation.
+- **`OutputType=WinExe` breaks Blazor's framework static web assets** — the SDK target that registers `blazor.web.js`/`blazor.server.js` only runs for `OutputType=Exe`, so the csproj's `_AddBlazorFrameworkStaticWebAssetsForWinExe` target re-runs that logic itself. Don't "simplify" that MSBuild block away; without it the UI loads but has no interactivity.
 
 ## Build history
 The app was built in the ordered phases of §13 (Phase 0 host skeleton → Phase 1 data layer → Phase 2 OL client + normalization tests → Phase 3 read-only UI → … → Phase 14 packaging) and **all phases are complete.** That plan is now a record of how the code came together and a map of where each design decision is justified — not a forward roadmap.
@@ -90,9 +92,9 @@ dotnet run --project src/BookTrak/BookTrak.csproj            # dev (framework-de
 dotnet test                                                  # xUnit suite (tests/BookTrak.Tests)
 dotnet publish src/BookTrak/BookTrak.csproj -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true
 ```
-`publish.ps1` wraps the publish command and copies the single-file output to the release share (pass `-Destination <path>` for a local build). `RuntimeIdentifier`/`SelfContained`/`PublishSingleFile` are intentionally passed at publish time, not baked into the csproj, so `dotnet build`/`dotnet run` stay fast framework-dependent builds.
+`publish.ps1` wraps the publish command and overlays the output onto the release share (pass `-Destination <path>` for a local build). **The destination is the live app folder** — `BookTrak.db`, `covers/`, `backups/`, `config.json` sit beside the exe there — so the copy step must only add/overwrite binaries, **never mirror or delete** the destination. `RuntimeIdentifier`/`SelfContained`/`PublishSingleFile` are intentionally passed at publish time, not baked into the csproj, so `dotnet build`/`dotnet run` stay fast framework-dependent builds.
 
 ## Accepted trade-offs (documented, not bugs)
 - **No app-level auth.** Loopback-only bind is the security control; any local process/user can reach the UI. Accepted for a single-user personal app.
-- **Title→ASIN discovery is best-effort, not guaranteed** — paste-the-ASIN remains the reliable audiobook path, but `BookTrak.Audible` now resolves title+author → candidate ASIN via Audible's unofficial catalog search (see Data sources carve-out). Single adds auto-attach only a single high-confidence match; bulk "Add All" skips the lookup; the book detail page offers a "Find matching audiobook" picker. Treat any of it failing/empty as normal and fall back to manual ASIN.
+- **Title→ASIN discovery is best-effort, not guaranteed** — paste-the-ASIN remains the reliable audiobook path, but `BookTrak.Audible` now resolves title+author → candidate ASIN via Audible's unofficial catalog search (see Data sources carve-out). Single adds on the Find-new-books page auto-attach only a single high-confidence match; its bulk "Add All" skips the lookup; the book detail page offers a "Find matching audiobook" picker. Treat any of it failing/empty as normal and fall back to manual ASIN.
 - **CSV export is deferred** — `.db` + backups cover portability.
