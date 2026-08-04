@@ -46,31 +46,15 @@
     </ItemGroup>
 
     <ItemGroup>
-      <_MissingFrameworkStaticWebAssetCandidate
-        Include="@(_FrameworkStaticWebAssetCandidate)"
-        Condition="!EXISTS('%(Identity)')" />
+      <_MissingFrameworkStaticWebAssetCandidate Include="@(_FrameworkStaticWebAssetCandidate)" Condition="!EXISTS('%(Identity)')" />
       <_FrameworkStaticWebAssetCandidate Remove="@(_MissingFrameworkStaticWebAssetCandidate)" />
     </ItemGroup>
 
-    <DefineStaticWebAssets
-      Condition="'@(_FrameworkStaticWebAssetCandidate->Count())' != '0'"
-      CandidateAssets="@(_FrameworkStaticWebAssetCandidate)"
-      ContentRoot="$(BlazorFrameworkStaticWebAssetRoot)"
-      SourceId="Microsoft.AspNetCore.App.Internal.Assets"
-      SourceType="Discovered"
-      AssetKind="All"
-      AssetMode="CurrentProject"
-      AssetRole="Primary"
-      FingerprintCandidates="true"
-      BasePath="$(StaticWebAssetBasePath)">
+    <DefineStaticWebAssets Condition="'@(_FrameworkStaticWebAssetCandidate-&gt;Count())' != '0'" CandidateAssets="@(_FrameworkStaticWebAssetCandidate)" ContentRoot="$(BlazorFrameworkStaticWebAssetRoot)" SourceId="Microsoft.AspNetCore.App.Internal.Assets" SourceType="Discovered" AssetKind="All" AssetMode="CurrentProject" AssetRole="Primary" FingerprintCandidates="true" BasePath="$(StaticWebAssetBasePath)">
       <Output TaskParameter="Assets" ItemName="_FrameworkStaticWebAsset" />
     </DefineStaticWebAssets>
 
-    <DefineStaticWebAssetEndpoints
-      Condition="'@(_FrameworkStaticWebAsset)' != ''"
-      CandidateAssets="@(_FrameworkStaticWebAsset)"
-      ExistingEndpoints=""
-      ContentTypeMappings="@(StaticWebAssetContentTypeMapping)">
+    <DefineStaticWebAssetEndpoints Condition="'@(_FrameworkStaticWebAsset)' != ''" CandidateAssets="@(_FrameworkStaticWebAsset)" ExistingEndpoints="" ContentTypeMappings="@(StaticWebAssetContentTypeMapping)">
       <Output TaskParameter="Endpoints" ItemName="_FrameworkStaticAssetEndpoint" />
     </DefineStaticWebAssetEndpoints>
 
@@ -81,13 +65,13 @@
   </Target>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.7.0" />
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.8.0" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
   </ItemGroup>
 
 </Project>
