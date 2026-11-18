@@ -10,3 +10,6 @@ BookTrak.db-wal
 BookTrak.db-shm
 covers/
 backups/
+
+# Per-machine Claude Code settings
+.claude/settings.local.json

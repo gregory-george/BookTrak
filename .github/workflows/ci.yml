@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore BookTrak.slnx
+
+      - name: Build
+        run: dotnet build BookTrak.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test BookTrak.slnx -c Release --no-build
+
+      # Smoke-test the self-contained single-file publish (native e_sqlite3 extraction,
+      # WinExe Blazor static-asset workaround). Output is not uploaded.
+      - name: Publish (smoke)
+        run: dotnet publish src/BookTrak/BookTrak.csproj -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true -o publish-ci
+
+      - name: Verify Blazor framework script is published
+        shell: pwsh
+        run: |
+          $hit = Get-ChildItem publish-ci -Recurse -Filter 'blazor.web*.js' -ErrorAction SilentlyContinue
+          if (-not $hit) { Write-Error 'blazor.web.js missing from publish output (WinExe static-asset target regressed?)'; exit 1 }
+          $hit | ForEach-Object { $_.FullName }
