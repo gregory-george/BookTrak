@@ -31,7 +31,7 @@ jobs:
         run: dotnet build BookTrak.slnx -c Release --no-restore
 
       - name: Test
-        run: dotnet test BookTrak.slnx -c Release --no-build
+        run: dotnet test --solution BookTrak.slnx -c Release --no-build
 
       # Smoke-test the self-contained single-file publish (native e_sqlite3 extraction,
       # WinExe Blazor static-asset workaround). Output is not uploaded.
