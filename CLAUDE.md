@@ -5,7 +5,7 @@ Portable, single-folder, double-click-to-run book & audiobook manager for **Wind
 > Full spec: [BookTrak-Requirements-and-Build-Plan.md](BookTrak-Requirements-and-Build-Plan.md). The **code is the source of truth for what exists**; the spec remains authoritative for *design intent and rationale*. **All design questions are settled — don't redesign settled decisions.**
 
 ## Status
-**Shipping — v1.0.1, fully implemented.** All build phases through packaging are done (see Build history). New work extends a shipped app: match existing patterns, don't reopen settled decisions, and don't pull in scope that isn't asked for.
+**Shipping — v1.0.2, fully implemented.** All build phases through packaging are done (see Build history). New work extends a shipped app: match existing patterns, don't reopen settled decisions, and don't pull in scope that isn't asked for.
 
 ## Stack
 - .NET 10, `net10.0-windows`, `OutputType=WinExe`, `UseWindowsForms=true`
